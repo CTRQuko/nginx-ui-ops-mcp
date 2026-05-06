@@ -1,0 +1,60 @@
+# nginx-ui-ops MCP plugin manifest — Fase 7 cutover.
+# Standalone repo target: CTRQuko/nginx-ui-ops-mcp
+# Mimir mount: as plugin under plugins/nginx-ui-ops/
+
+[plugin]
+name = "nginx-ui-ops"
+version = "0.1.0"
+enabled = true
+
+[runtime]
+command = "uv"
+args = ["run", "nginx-ui-ops-mcp"]
+
+[security]
+# Mutation gating: when false (default), the 4 mutating tools are NOT
+# exposed to the MCP client — only the 4 read-only ones are. Operator
+# flips this to true explicitly when authorizing mutations.
+#
+# Mutating tools (gated):
+#   cert_issue              — emite cert vía acme.sh (gasta cuota Let's Encrypt)
+#   cert_domains_update     — UPDATE en DB nginx-ui + restart nginx-ui
+#   cert_deploy_files       — sobrescribe fullchain/key en disco
+#   nginx_reload            — recarga nginx (downtime potencial si config rota)
+#
+# Read-only tools (siempre disponibles):
+#   cert_list, cert_get, nginx_test, nginx_cert_validate
+allow_mutations = false
+
+# Backend selection (env): NGINXUI_BACKEND must be one of:
+#   wrapper-lxc   — Proxmox + LXC + claude-wrapper (operator setup)
+#   direct-ssh    — generic SSH host with sudo NOPASSWD
+#
+# Per-backend env vars: see README.md.
+# DNS provider env vars (CF_API_TOKEN, AWS_*, etc.) forwarded
+# transparently to acme.sh subprocess — plugin is provider-agnostic.
+credential_refs = [
+  "NGINXUI_BACKEND",
+  "NGINXUI_DB_PATH",
+  "NGINXUI_ACME_HOME",
+  # wrapper-lxc backend
+  "NGINXUI_PVE_SSH_ALIAS",
+  "NGINXUI_LXC_ID",
+  "NGINXUI_WRAPPER_PATH",
+  "NGINXUI_SUDO_METHOD",
+  "NGINXUI_SUDO_PASSWORD_REF",
+  # direct-ssh backend
+  "NGINXUI_HOST",
+  "NGINXUI_SSH_USER",
+  # acme.sh DNS providers — operator sets only those they use
+  "CF_API_TOKEN", "CF_ZONE_ID",
+  "CF_API_KEY", "CF_EMAIL",
+  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
+  "DO_API_TOKEN",
+  "GANDI_LIVEDNS_KEY",
+]
+
+# NO hay [[requires.credentials]] — el plugin arranca como `ok` sin
+# credenciales (las read-only tools que no necesitan backend funcionan).
+# Las que sí necesitan backend devuelven error legible al ser invocadas
+# si NGINXUI_BACKEND no está set.

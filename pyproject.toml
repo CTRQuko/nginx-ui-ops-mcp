@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nginx-ui-ops-mcp"
+version = "0.1.0"
+description = "MCP server for nginx-ui cert management and ops via SSH/wrapper backends"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+  { name = "CTRQuko" }
+]
+keywords = ["mcp", "model-context-protocol", "nginx", "nginx-ui", "tls", "acme", "cert-management"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+
+dependencies = [
+  "mcp[cli]>=1.0",
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-timeout>=2.3",
+]
+
+[project.scripts]
+nginx-ui-ops-mcp = "nginx_ui_ops.server:main"
+
+[project.urls]
+Homepage = "https://github.com/CTRQuko/nginx-ui-ops-mcp"
+Repository = "https://github.com/CTRQuko/nginx-ui-ops-mcp"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nginx_ui_ops*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --strict-markers --timeout=30"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
