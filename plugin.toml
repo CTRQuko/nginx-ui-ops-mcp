@@ -4,7 +4,7 @@
 
 [plugin]
 name = "nginx-ui-ops"
-version = "0.2.0"
+version = "0.3.0"
 enabled = true
 
 [runtime]
@@ -12,18 +12,25 @@ command = "uv"
 args = ["run", "nginx-ui-ops-mcp"]
 
 [security]
-# Mutation gating: when false (default), the 4 mutating tools are NOT
-# exposed to the MCP client — only the 4 read-only ones are. Operator
-# flips this to true explicitly when authorizing mutations.
+# Mutation gating: when false (default), the 8 mutating tools are NOT
+# exposed to the MCP client — only the 12 read-only ones (+ wizard) are.
+# Operator flips this to true explicitly when authorizing mutations.
 #
-# Mutating tools (gated):
+# Mutating tools (gated, 8):
 #   cert_issue              — emite cert vía acme.sh (gasta cuota Let's Encrypt)
 #   cert_domains_update     — UPDATE en DB nginx-ui + restart nginx-ui
 #   cert_deploy_files       — sobrescribe fullchain/key en disco
 #   nginx_reload            — recarga nginx (downtime potencial si config rota)
+#   nginx_write_file        — escribe config en /etc/nginx/ (con backup + rollback)
+#   nginx_full_restart      — systemctl restart nginx (drops connections)
+#   nginx_reopen_logs       — nginx -s reopen (post-logrotate)
+#   nginx_quit              — nginx -s quit (graceful shutdown — operador lo arranca de nuevo)
 #
-# Read-only tools (siempre disponibles):
-#   cert_list, cert_get, nginx_test, nginx_cert_validate
+# Read-only tools (siempre disponibles, 12 + wizard):
+#   nginxui_setup, cert_list, cert_get, nginx_test, nginx_cert_validate,
+#   nginx_status, nginx_dump_config, nginx_logs, nginx_compiled_with,
+#   nginx_active_conns, nginx_pending_changes, nginx_test_with_diff,
+#   nginx_read_file
 allow_mutations = false
 
 # Backend selection (env): NGINXUI_BACKEND must be one of:

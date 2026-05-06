@@ -7,23 +7,53 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python versions](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
-**Status**: 🚧 Alpha (`v0.1.0` in development). Designed to be portable
-and publishable — not tied to any specific homelab.
+**Status**: 🚧 Alpha (`v0.3.0`). Designed to be portable and
+publishable — not tied to any specific homelab.
 
 ## What it does
 
-8 MCP tools, split across 4 read-only and 4 mutating:
+21 MCP tools — 1 setup wizard + 12 read-only + 8 mutating:
 
-| Tool | Type | Purpose |
-|------|------|---------|
-| `cert_list` | read | List certs from nginx-ui's SQLite DB |
-| `cert_get` | read | Detail of one cert + on-disk + parsed status |
-| `nginx_test` | read | `nginx -t` — config syntax check |
-| `nginx_cert_validate` | read | What the world actually sees (openssl s_client) |
-| `cert_issue` | mutate | Issue cert via acme.sh, idempotent |
-| `cert_domains_update` | mutate | UPDATE SANs in DB + restart nginx-ui |
-| `cert_deploy_files` | mutate | Push fullchain + key to paths from DB |
-| `nginx_reload` | mutate | `nginx -t && nginx -s reload` |
+### Setup (always available)
+| Tool | Purpose |
+|------|---------|
+| `nginxui_setup` | Conversational onboarding wizard — detects missing env vars and walks the operator through them |
+
+### Cert management (read-only)
+| Tool | Purpose |
+|------|---------|
+| `cert_list` | List certs from nginx-ui's SQLite DB |
+| `cert_get` | Detail of one cert + on-disk + parsed status |
+| `nginx_cert_validate` | What the world actually sees (openssl s_client) |
+
+### Nginx control (read-only)
+| Tool | Purpose |
+|------|---------|
+| `nginx_test` | `nginx -t` — config syntax check |
+| `nginx_status` | systemd state + worker count + uptime |
+| `nginx_dump_config` | `nginx -T` — full effective merged config |
+| `nginx_logs` | snapshot tail + grep of any nginx log file |
+| `nginx_compiled_with` | parsed `nginx -V`: version, TLS lib, modules, configure flags |
+| `nginx_active_conns` | runtime stats from `stub_status` (if mounted) |
+| `nginx_pending_changes` | files modified since service start |
+| `nginx_test_with_diff` | validate a proposed change without touching prod + unified diff |
+| `nginx_read_file` | raw read of any file under `/etc/nginx/**` |
+
+### Cert mutations (gated)
+| Tool | Purpose |
+|------|---------|
+| `cert_issue` | Issue cert via acme.sh, idempotent |
+| `cert_domains_update` | UPDATE SANs in DB + restart nginx-ui |
+| `cert_deploy_files` | Push fullchain + key to paths from DB |
+
+### Nginx mutations (gated)
+| Tool | Purpose |
+|------|---------|
+| `nginx_reload` | `nginx -t && nginx -s reload` |
+| `nginx_write_file` | atomic write under `/etc/nginx/` + implicit `nginx -t` + rollback |
+| `nginx_full_restart` | `systemctl restart nginx` (drops connections; safer to use reload) |
+| `nginx_reopen_logs` | `nginx -s reopen` (after logrotate, log volume remount) |
+| `nginx_quit` | `nginx -s quit` (graceful shutdown — operator must start again) |
 
 Mutating tools are **gated** behind `[security].allow_mutations = true`
 in `plugin.toml` (or `NGINXUI_ALLOW_MUTATIONS=true` env var). Default
@@ -33,16 +63,20 @@ off — read-only by default. Operator opts in explicitly.
 
 The native MCP covers vhost / config management, but **not**:
 
-- Issuing new certs via acme.sh
-- DNS-01 challenges with arbitrary providers
+- Issuing new certs via acme.sh + DNS-01 with arbitrary providers
 - Deploying cert files to nginx-ui's expected paths
-- Direct DB updates (e.g. add a SAN)
+- Direct DB updates (e.g. add a SAN to an existing cert)
 - Restarting the nginx-ui daemon
 - Validating what's actually served vs what the DB says
+- **Direct nginx control** outside the UI: `nginx -t -p staging`, full
+  `nginx -T` dump, `nginx -V` parsed, `stub_status` runtime metrics,
+  log tail/grep, "what files have been touched since last reload",
+  atomic config writes with backup/rollback, `nginx -s reopen` after
+  logrotate, `systemctl restart` when reload isn't enough, graceful quit.
 
 This plugin runs alongside the native MCP — both can be declared in
 your `.mcp.json` or mimir manifest. The native MCP handles vhost
-configs, this one handles certs.
+configs through nginx-ui; this one handles certs and direct nginx ops.
 
 ## Backends
 
@@ -212,6 +246,26 @@ nginx_cert_validate("foo.example.com")
 
 nginx_test()
 # → {ok: true, stdout: "syntax is ok"}
+
+# v0.3.0 diagnostics
+nginx_status()
+# → {active: true, sub_state: "running", main_pid: 12345, worker_count: 4,
+#    started_at: "2026-05-04T10:00:00Z", uptime_seconds: 8632, ...}
+
+nginx_active_conns()
+# → {enabled: true, active_connections: 42, accepts: 1000, requests: 5000, ...}
+# Or, if stub_status not mounted:
+# → {enabled: false, note: "To enable, add a `location = /nginx_status` block..."}
+
+nginx_pending_changes()
+# → {has_pending: true, pending_files: ["/etc/nginx/sites-available/foo.conf"], ...}
+
+nginx_test_with_diff(
+    "/etc/nginx/sites-available/foo.conf",
+    "server { listen 443 ssl; ... }\n",
+)
+# → {ok: true, diff: "+server { listen 443 ssl;\n-server { listen 80;\n", ...}
+# nginx -t against a staged copy — production untouched.
 ```
 
 To unlock mutations (cert renewal, deploy, reload):
@@ -235,6 +289,19 @@ cert_issue(["*.example.com", "example.com", "*.apps.example.com"])
 # Deploy the issued cert to nginx-ui paths + reload
 cert_deploy_files(1)
 # → {ok: true, nginx_test_passed: true, nginx_reloaded: true}
+
+# v0.3.0 ops — atomic config edit with rollback
+nginx_write_file(
+    "/etc/nginx/conf.d/security_headers.conf",
+    "add_header X-Frame-Options DENY always;\n",
+)
+# → {ok: true, backup_path: "...bak-20260506-181500", nginx_test_passed: true,
+#    rolled_back: false}
+# If the new content fails nginx -t, the backup is restored automatically.
+
+nginx_reopen_logs()  # after logrotate
+nginx_full_restart()  # nuclear option — drops connections; runs nginx -t first
+nginx_quit()  # graceful shutdown — service is down until manual start
 ```
 
 ## Safety features
@@ -244,10 +311,20 @@ cert_deploy_files(1)
   Let's Encrypt. Override with `force=True`.
 - **Lock file** — `cert_issue` takes `/tmp/acme-lock` to prevent
   collisions with acme.sh's renewal cron.
-- **Implicit `nginx -t` before `nginx_reload`** — never reload with a
-  broken config.
-- **Mutation gate** — read-only by default; mutations off until
-  operator opts in.
+- **Implicit `nginx -t` before `nginx_reload` and `nginx_full_restart`**
+  — never reload/restart with a broken config.
+- **`nginx_write_file` rollback** — backs up the prior content to a
+  timestamped `.bak-` file, runs `nginx -t` after writing, restores
+  the backup if the test fails. New files (no backup) get rm'd on
+  failure so a broken include can't sit in the tree.
+- **`nginx_test_with_diff`** — validate a proposed change against a
+  staged copy of `/etc/nginx/`. Production untouched, returns the
+  unified diff vs current.
+- **Path validation** — `nginx_write_file` and `nginx_read_file`
+  refuse paths outside `NGINXUI_CONFIG_DIR` (default `/etc/nginx`)
+  to avoid being a generic file-mover.
+- **Mutation gate** — read-only by default; the 8 mutating tools off
+  until operator opts in via `NGINXUI_ALLOW_MUTATIONS=true`.
 
 ## License
 
