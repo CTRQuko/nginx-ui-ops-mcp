@@ -26,6 +26,10 @@ classifiers = [
 dependencies = [
   "mcp[cli]>=1.0",
   "pydantic>=2.0",
+  # x509 parsing for cert_get / nginx_cert_validate. Pure-Python with
+  # binary wheels on all platforms. Local parsing avoids shelling out
+  # to openssl through the backend transport for read-only inspection.
+  "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
@@ -56,4 +60,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
-ignore = ["E501"]
+# E501 — long lines: black-style 100ch is the cap
+# E702 — multiple statements on one line: tolerated in tests for compact
+#        MagicMock setup. Production code stays one-statement-per-line.
+ignore = ["E501", "E702"]

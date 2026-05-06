@@ -432,8 +432,8 @@ class WrapperLXCBackend(NginxUIBackend):
         # <acme_home>/<primary>_<key_type_dir>/{fullchain.cer,<primary>.key}
         # where <key_type_dir> is "ecc" for EC keys, "" (no suffix) for RSA.
         primary = domains[0].lstrip("*").lstrip(".")
-        # acme.sh strips wildcards: "*.casaredes.cc" → dir "*.casaredes.cc_ecc"
-        # or "casaredes.cc_ecc". Use the actual first domain (with wildcard).
+        # acme.sh strips wildcards: "*.example.com" → dir "*.example.com_ecc"
+        # or "example.com_ecc". Use the actual first domain (with wildcard).
         cert_dir_name = domains[0]
         is_ecc = key_type.upper() in ("P256", "P384", "P521", "ECC")
         if is_ecc:
