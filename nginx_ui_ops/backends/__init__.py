@@ -2,6 +2,8 @@
 
 Public:
 - ``NginxUIBackend``  — abstract base
-- ``get_backend()``   — factory, selects via ``NGINXUI_BACKEND`` env
+- ``CommandResult``   — return type of ``run_cmd``
+- ``BackendError``    — canonical failure type for transport problems
+- ``get_backend()``   — factory, selects via ``NGINXUI_BACKEND`` env (Step 4)
 """
-from .base import NginxUIBackend  # noqa: F401
+from .base import BackendError, CommandResult, NginxUIBackend  # noqa: F401
