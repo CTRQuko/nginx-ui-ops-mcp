@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nginx-ui-ops-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for nginx-ui cert management and ops via SSH/wrapper backends"
 readme = "README.md"
 license = {text = "MIT"}

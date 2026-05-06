@@ -159,6 +159,37 @@ Drop the `plugin.toml` into `<mimir-root>/plugins/nginx-ui-ops/` (this
 repo as a sub-checkout or symlink), set the env vars in your scoped
 credentials, restart mimir.
 
+## Easy setup — let the LLM walk you through it
+
+The plugin ships a conversational wizard tool, ``nginxui_setup``,
+designed for users who don't want to read this README cover-to-cover.
+Just ask the LLM:
+
+> "Help me set up nginx-ui-ops"
+
+The LLM calls ``nginxui_setup()`` and the tool returns a structured
+payload telling it exactly what to ask you:
+
+```
+LLM:  ¿Cómo está accesible tu instancia de nginx-ui?
+       a) En un LXC de Proxmox con claude-wrapper
+       b) En un host con SSH directo
+You:  a, alias 'pve2', LXC 104
+LLM:  [persists 3 credentials in mimir's vault via router_add_credential]
+LLM:  ¿Usas Cloudflare para DNS-01? Si sí, dame el API token y zone ID
+You:  [pegar valores]
+LLM:  [persists CF_API_TOKEN + CF_ZONE_ID]
+LLM:  ✅ Setup completo. Reinicia el cliente MCP para que las env vars surtan efecto.
+```
+
+You don't edit JSON, don't touch ``.mcp.json``, don't read the
+"Backends" section below. The wizard is **idempotent** — call it any
+time to check status, fix a missing variable, or expand from
+read-only to mutating tools.
+
+The wizard is read-only and always available, regardless of the
+``allow_mutations`` gate.
+
 ## Quick start
 
 Read-only diagnostic on a hypothetical Proxmox+LXC setup:

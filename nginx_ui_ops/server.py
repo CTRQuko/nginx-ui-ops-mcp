@@ -45,9 +45,15 @@ def _register_tools() -> None:
     """
     # Imports inside the function so the modules are loaded lazily,
     # which keeps unit tests cheap.
-    from .tools import certs, nginx, validate
+    from .tools import certs, nginx, setup_wizard, validate
 
-    # Always-on (read-only) tools
+    # Always-on (read-only) tools.
+    # nginxui_setup is the conversational onboarding wizard — always
+    # available regardless of the mutation gate. Read-only by design;
+    # it returns instructions that the LLM executes via mimir's
+    # router_add_credential. Listed FIRST so it's discoverable when
+    # a fresh installation has nothing else configured.
+    mcp.tool()(setup_wizard.nginxui_setup)
     mcp.tool()(certs.cert_list)
     mcp.tool()(certs.cert_get)
     mcp.tool()(nginx.nginx_test)
