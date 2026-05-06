@@ -74,7 +74,6 @@ def test_nginx_status_active(fake):
             "      Tasks: 5 (limit: 9426)\n"
         )),
         _ok(stdout="12346\n12347\n12348\n12349\n"),  # 4 workers
-        _ok(stdout="ActiveEnterTimestampMonotonic=1234567\n"),
         _ok(stdout="ActiveEnterTimestamp=Thu 2026-05-04 10:00:00 UTC\n"),
     ]
     result = diag.nginx_status()
@@ -245,7 +244,6 @@ def test_nginx_active_conns_falls_through_non_stub_responses(fake):
 def test_nginx_pending_changes_no_pending(fake):
     """Service started, no files newer."""
     fake.command_responses = [
-        _ok(stdout="ActiveEnterTimestampMonotonic=1234567\n"),
         _ok(stdout="ActiveEnterTimestamp=Thu 2026-05-04 10:00:00 UTC\n"),
         _ok(stdout=""),  # find returns nothing
     ]
@@ -256,7 +254,6 @@ def test_nginx_pending_changes_no_pending(fake):
 
 def test_nginx_pending_changes_with_pending(fake):
     fake.command_responses = [
-        _ok(stdout="ActiveEnterTimestampMonotonic=1234567\n"),
         _ok(stdout="ActiveEnterTimestamp=Thu 2026-05-04 10:00:00 UTC\n"),
         _ok(stdout="/etc/nginx/sites-available/foo.conf\n/etc/nginx/conf.d/extras.conf\n"),
     ]
@@ -269,7 +266,6 @@ def test_nginx_pending_changes_with_pending(fake):
 def test_nginx_pending_changes_service_not_active(fake):
     """No ActiveEnterTimestamp → returns has_pending=False with note."""
     fake.command_responses = [
-        _ok(stdout="ActiveEnterTimestampMonotonic=0\n"),
         _ok(stdout="ActiveEnterTimestamp=\n"),
     ]
     result = diag.nginx_pending_changes()

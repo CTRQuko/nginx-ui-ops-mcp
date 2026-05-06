@@ -154,11 +154,11 @@ def nginx_status() -> dict[str, Any]:
             worker_count = sum(1 for line in ps.stdout.splitlines() if line.strip())
 
     # Started_at via systemd's ActiveEnterTimestamp (more reliable than
-    # parsing free-form "since" line).
+    # parsing free-form "since" line in `status` output).
     started_at: datetime | None = None
     uptime_seconds: int | None = None
     show = backend.run_cmd(
-        ["systemctl", "show", "nginx", "--property=ActiveEnterTimestampMonotonic,ActiveEnterTimestamp"],
+        ["systemctl", "show", "nginx", "--property=ActiveEnterTimestamp"],
         timeout=5,
     )
     if show.ok:
@@ -398,24 +398,18 @@ def nginx_pending_changes() -> dict[str, Any]:
       to reload yet).
     """
     backend = get_backend()
-    # Get service start.
+    # Get service start time (single systemctl show call).
     show = backend.run_cmd(
-        ["systemctl", "show", "nginx", "--property=ActiveEnterTimestampMonotonic"],
+        ["systemctl", "show", "nginx", "--property=ActiveEnterTimestamp"],
         timeout=5,
     )
     started_at: datetime | None = None
     if show.ok:
-        # Use absolute timestamp for comparison instead of monotonic.
-        abs_show = backend.run_cmd(
-            ["systemctl", "show", "nginx", "--property=ActiveEnterTimestamp"],
-            timeout=5,
-        )
-        if abs_show.ok:
-            for line in abs_show.stdout.splitlines():
-                if line.startswith("ActiveEnterTimestamp="):
-                    stamp = line.split("=", 1)[1].strip()
-                    if stamp and stamp != "0":
-                        started_at = _parse_systemd_timestamp(stamp)
+        for line in show.stdout.splitlines():
+            if line.startswith("ActiveEnterTimestamp="):
+                stamp = line.split("=", 1)[1].strip()
+                if stamp and stamp != "0":
+                    started_at = _parse_systemd_timestamp(stamp)
 
     if started_at is None:
         return NginxPendingChanges(
