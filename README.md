@@ -159,6 +159,53 @@ Drop the `plugin.toml` into `<mimir-root>/plugins/nginx-ui-ops/` (this
 repo as a sub-checkout or symlink), set the env vars in your scoped
 credentials, restart mimir.
 
+## Quick start
+
+Read-only diagnostic on a hypothetical Proxmox+LXC setup:
+
+```bash
+export NGINXUI_BACKEND=wrapper-lxc
+export NGINXUI_PVE_SSH_ALIAS=pve-prod        # your SSH alias
+export NGINXUI_LXC_ID=204                    # your LXC ID
+uv run nginx-ui-ops-mcp
+```
+
+From an MCP client:
+
+```python
+cert_list()
+# → [{id: 1, domains: ["*.example.com", "example.com"], days_remaining: 73, ...}]
+
+nginx_cert_validate("foo.example.com")
+# → {sans: [...], matches_hostname: true, days_remaining: 73}
+
+nginx_test()
+# → {ok: true, stdout: "syntax is ok"}
+```
+
+To unlock mutations (cert renewal, deploy, reload):
+
+```bash
+export NGINXUI_ALLOW_MUTATIONS=true
+export CF_API_TOKEN=...
+export CF_ZONE_ID=...
+uv run nginx-ui-ops-mcp
+```
+
+```python
+# Add a SAN to an existing cert (DB update + restart nginx-ui)
+cert_domains_update(1, ["*.example.com", "example.com", "*.apps.example.com"])
+
+# Issue a new cert (idempotent — skips if cert has >30d remaining)
+cert_issue(["*.example.com", "example.com", "*.apps.example.com"])
+# → {action: "issued_new", fullchain_path: "...", key_path: "..."}
+# Or: {action: "kept_existing", days_remaining: 73, ...}
+
+# Deploy the issued cert to nginx-ui paths + reload
+cert_deploy_files(1)
+# → {ok: true, nginx_test_passed: true, nginx_reloaded: true}
+```
+
 ## Safety features
 
 - **Idempotent `cert_issue`** — if a valid cert (>30 days remaining)
