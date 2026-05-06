@@ -10,7 +10,6 @@ from nginx_ui_ops.backends import reset_cache
 from nginx_ui_ops.backends.base import BackendError
 from nginx_ui_ops.tools import diagnostics as diag
 
-
 # ---------------------------------------------------------------------------
 # Fake backend
 # ---------------------------------------------------------------------------
