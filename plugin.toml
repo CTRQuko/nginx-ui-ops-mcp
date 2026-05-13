@@ -44,6 +44,8 @@ credential_refs = [
   "NGINXUI_BACKEND",
   "NGINXUI_DB_PATH",
   "NGINXUI_ACME_HOME",
+  # Mutation gate (server.py reads this at boot)
+  "NGINXUI_ALLOW_MUTATIONS",
   # wrapper-lxc backend
   "NGINXUI_PVE_SSH_ALIAS",
   "NGINXUI_LXC_ID",
