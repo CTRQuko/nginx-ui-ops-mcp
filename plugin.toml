@@ -1,10 +1,10 @@
-# nginx-ui-ops MCP plugin manifest — Fase 7 cutover.
+# nginx-ui-ops MCP plugin manifest.
 # Standalone repo target: CTRQuko/nginx-ui-ops-mcp
 # Mimir mount: as plugin under plugins/nginx-ui-ops/
 
 [plugin]
 name = "nginx-ui-ops"
-version = "0.3.0"
+version = "0.4.0"
 enabled = true
 
 [runtime]
@@ -42,28 +42,72 @@ args = ["run", "nginx-ui-ops-mcp"]
 #   nginx_read_file
 allow_mutations = false
 
-# Backend selection (env): NGINXUI_BACKEND must be one of:
-#   wrapper-lxc   — Proxmox + LXC + claude-wrapper (operator setup)
-#   direct-ssh    — generic SSH host with sudo NOPASSWD
+# v0.4.0 — MULTI-TARGET support.
 #
-# Per-backend env vars: see README.md.
-# DNS provider env vars (CF_API_TOKEN, AWS_*, etc.) forwarded
-# transparently to acme.sh subprocess — plugin is provider-agnostic.
+# Legacy single-target mode (v0.3.x, sigue funcionando):
+#   NGINXUI_BACKEND=wrapper-lxc  (o direct-ssh)
+#   + NGINXUI_PVE_SSH_ALIAS, NGINXUI_LXC_ID, etc. según backend.
+#
+# Multi-target mode (v0.4.0+, recomendado para 2+ instancias):
+#   NGINXUI_TARGETS=logrono,vps
+#   NGINXUI_DEFAULT_TARGET=logrono   (opt — si falta, usa primer target)
+#   NGINXUI_TARGET_LOGRONO_BACKEND=wrapper-lxc
+#   NGINXUI_TARGET_LOGRONO_PVE_SSH_ALIAS=pve2-claude
+#   NGINXUI_TARGET_LOGRONO_LXC_ID=104
+#   NGINXUI_TARGET_VPS_BACKEND=docker-exec
+#   NGINXUI_TARGET_VPS_DOCKER_SSH_ALIAS=hetzner-claude
+#   NGINXUI_TARGET_VPS_DOCKER_CONTAINER=nginx-ui
+#
+# Backends soportados:
+#   wrapper-lxc  — Proxmox + LXC + claude-wrapper (acme.sh local)
+#   direct-ssh   — SSH directo a host con sudo NOPASSWD (acme.sh local)
+#   docker-exec  — Docker container vía ssh + docker exec (NO acme.sh)
+#
+# Cada tool acepta `target: str | None = None` como último parámetro.
+# `target=None` → NGINXUI_DEFAULT_TARGET o primer target declarado.
+#
+# DNS provider env vars (CF_API_TOKEN, AWS_*, etc.) son globales al
+# plugin — no varían per-target.
 credential_refs = [
+  # Multi-target declaration (v0.4.0+)
+  "NGINXUI_TARGETS",
+  "NGINXUI_DEFAULT_TARGET",
+
+  # Per-target wildcards (logrono, vps, etc.)
+  "NGINXUI_TARGET_*_BACKEND",
+  "NGINXUI_TARGET_*_PVE_SSH_ALIAS",
+  "NGINXUI_TARGET_*_LXC_ID",
+  "NGINXUI_TARGET_*_WRAPPER_PATH",
+  "NGINXUI_TARGET_*_SUDO_METHOD",
+  "NGINXUI_TARGET_*_SUDO_PASSWORD_REF",
+  "NGINXUI_TARGET_*_SSH_BIN",
+  "NGINXUI_TARGET_*_PCT_PATH",
+  "NGINXUI_TARGET_*_HOST",
+  "NGINXUI_TARGET_*_SSH_USER",
+  "NGINXUI_TARGET_*_DOCKER_SSH_ALIAS",
+  "NGINXUI_TARGET_*_DOCKER_CONTAINER",
+  "NGINXUI_TARGET_*_DOCKER_USER",
+  "NGINXUI_TARGET_*_DOCKER_SSH_BIN",
+  "NGINXUI_TARGET_*_DOCKER_BIN",
+
+  # Legacy single-target (v0.3.x) — sigue funcionando, backward-compat
   "NGINXUI_BACKEND",
   "NGINXUI_DB_PATH",
   "NGINXUI_ACME_HOME",
-  # Mutation gate (server.py reads this at boot)
-  "NGINXUI_ALLOW_MUTATIONS",
-  # wrapper-lxc backend
   "NGINXUI_PVE_SSH_ALIAS",
   "NGINXUI_LXC_ID",
   "NGINXUI_WRAPPER_PATH",
   "NGINXUI_SUDO_METHOD",
   "NGINXUI_SUDO_PASSWORD_REF",
-  # direct-ssh backend
   "NGINXUI_HOST",
   "NGINXUI_SSH_USER",
+  "NGINXUI_DOCKER_SSH_ALIAS",
+  "NGINXUI_DOCKER_CONTAINER",
+  "NGINXUI_DOCKER_USER",
+
+  # Mutation gate (server.py reads this at boot)
+  "NGINXUI_ALLOW_MUTATIONS",
+
   # acme.sh DNS providers — operator sets only those they use
   "CF_API_TOKEN", "CF_ZONE_ID",
   "CF_API_KEY", "CF_EMAIL",
@@ -75,4 +119,4 @@ credential_refs = [
 # NO hay [[requires.credentials]] — el plugin arranca como `ok` sin
 # credenciales (las read-only tools que no necesitan backend funcionan).
 # Las que sí necesitan backend devuelven error legible al ser invocadas
-# si NGINXUI_BACKEND no está set.
+# si NGINXUI_BACKEND/NGINXUI_TARGETS no está set.

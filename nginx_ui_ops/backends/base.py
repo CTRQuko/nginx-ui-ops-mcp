@@ -62,10 +62,21 @@ class NginxUIBackend(ABC):
     Implementations:
       - :class:`~nginx_ui_ops.backends.wrapper_lxc.WrapperLXCBackend`
       - :class:`~nginx_ui_ops.backends.direct_ssh.DirectSSHBackend`
+      - :class:`~nginx_ui_ops.backends.docker_exec.DockerExecBackend` (v0.4.0+)
 
     Subclasses MUST implement all 6 abstract methods. They MAY override
     :meth:`describe` for richer diagnostics (default uses class name).
+
+    Class attribute :attr:`supports_acme` (default True) signals whether
+    this backend has ``acme.sh`` reachable. Backends running inside a
+    minimal container (e.g. docker-exec on ``uozi/nginx-ui``) should
+    set it to ``False`` so :func:`cert_issue` tools fail fast with a
+    legible message instead of attempting an acme.sh that doesn't exist.
     """
+
+    # Class-level capability flag. v0.4.0+ — defaults True for backward
+    # compat. Subclasses override per-impl.
+    supports_acme: bool = True
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -74,13 +85,42 @@ class NginxUIBackend(ABC):
     @classmethod
     @abstractmethod
     def from_env(cls) -> "NginxUIBackend":
-        """Construct the backend from environment variables.
+        """Construct the backend from environment variables (legacy mode).
+
+        Reads the historic single-target vars (``NGINXUI_PVE_SSH_ALIAS``,
+        ``NGINXUI_LXC_ID``, ``NGINXUI_HOST``, etc.). The factory in
+        ``backends.factory`` calls this when no ``NGINXUI_TARGETS``
+        is declared.
 
         Raises :class:`BackendError` (or a more specific subclass) if
-        required env vars are missing or malformed. The factory in
-        ``backends.factory`` calls this — callers should not normally
-        instantiate backends directly.
+        required env vars are missing or malformed.
         """
+
+    @classmethod
+    def from_env_target(cls, target: str) -> "NginxUIBackend":
+        """Construct the backend reading per-target env vars (v0.4.0+).
+
+        Subclasses MUST override to read ``NGINXUI_TARGET_<TARGET>_*``
+        vars. Default implementation raises NotImplementedError so a
+        backend that hasn't been multi-target-enabled fails loudly
+        instead of silently using legacy vars.
+
+        Args:
+            target: target name as declared in ``NGINXUI_TARGETS``.
+                Used to construct env var prefixes (uppercased).
+
+        Returns:
+            Backend instance configured for this target.
+
+        Raises:
+            BackendError: required ``NGINXUI_TARGET_<T>_*`` vars missing.
+            NotImplementedError: subclass hasn't implemented multi-target
+                support.
+        """
+        raise NotImplementedError(
+            f"{cls.__name__} hasn't implemented from_env_target(). "
+            "Use from_env() (legacy mode) or upgrade the backend."
+        )
 
     def describe(self) -> str:
         """Short human-readable identity of this backend instance.

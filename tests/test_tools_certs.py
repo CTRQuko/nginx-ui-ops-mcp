@@ -84,7 +84,7 @@ class FakeBackend:
 def fake_backend(monkeypatch):
     fake = FakeBackend()
     reset_cache()
-    monkeypatch.setattr(certs_mod, "get_backend", lambda: fake)
+    monkeypatch.setattr(certs_mod, "get_backend", lambda *a, **kw: fake)
     return fake
 
 

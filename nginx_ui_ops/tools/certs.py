@@ -106,9 +106,9 @@ def _normalize_cert_row(row: dict[str, Any]) -> CertInfo:
 # Read-only tools
 # ---------------------------------------------------------------------------
 
-def cert_list(deleted: bool = False) -> list[dict[str, Any]]:
+def cert_list(deleted: bool = False, target: str | None = None) -> list[dict[str, Any]]:
     """List certs from nginx-ui's ``certs`` SQLite table."""
-    backend = get_backend()
+    backend = get_backend(target)
     where = "" if deleted else " WHERE deleted_at IS NULL"
     sql = (
         f"SELECT id, name, domains, ssl_certificate_path, "
@@ -120,9 +120,9 @@ def cert_list(deleted: bool = False) -> list[dict[str, Any]]:
     return [_normalize_cert_row(r).model_dump() for r in rows]
 
 
-def cert_get(cert_id: int) -> dict[str, Any]:
+def cert_get(cert_id: int, target: str | None = None) -> dict[str, Any]:
     """Detail of one cert: DB row + on-disk + parsed x509."""
-    backend = get_backend()
+    backend = get_backend(target)
     rows = backend.query_db(
         _db_path(),
         "SELECT id, name, domains, ssl_certificate_path, "
@@ -199,11 +199,11 @@ def _read_on_disk_status(
 # Mutating tools — gated by [security].allow_mutations in plugin.toml
 # ---------------------------------------------------------------------------
 
-def cert_domains_update(cert_id: int, domains: list[str]) -> dict[str, Any]:
+def cert_domains_update(cert_id: int, domains: list[str], target: str | None = None) -> dict[str, Any]:
     """UPDATE certs.domains for a cert id, restart nginx-ui."""
     if not domains:
         raise ValueError("domains cannot be empty")
-    backend = get_backend()
+    backend = get_backend(target)
 
     rows = backend.query_db(
         _db_path(),
@@ -285,11 +285,35 @@ def cert_issue(
     key_type: str = "P256",
     dns_provider: str = "dns_cf",
     force: bool = False,
+    target: str | None = None,
 ) -> dict[str, Any]:
-    """Issue a cert via acme.sh. Idempotent unless ``force=True``."""
+    """Issue a cert via acme.sh. Idempotent unless ``force=True``.
+
+    v0.4.0: requires the selected ``target``'s backend to declare
+    ``supports_acme = True`` (wrapper-lxc, direct-ssh — yes;
+    docker-exec — no, because the upstream container doesn't ship
+    acme.sh). On unsupported targets returns ok=False with a
+    legible message instead of crashing.
+    """
+    from ..backends import supports_acme as _supports_acme
+
     if not domains:
         raise ValueError("domains cannot be empty")
-    backend = get_backend()
+
+    if not _supports_acme(target):
+        return {
+            "ok": False,
+            "error": (
+                f"cert_issue: target {target or 'default'!r} backend does not "
+                "support acme.sh (e.g. docker-exec on uozi/nginx-ui has no "
+                "acme.sh inside the container). Issue the cert on another "
+                "target (wrapper-lxc, direct-ssh) or run acme.sh manually "
+                "on the host, then push the cert with cert_deploy_files."
+            ),
+            "error_type": "unsupported_capability",
+        }
+
+    backend = get_backend(target)
 
     if not force:
         existing = _find_existing_cert(backend, domains)
@@ -373,9 +397,9 @@ def _find_existing_cert(
     return None
 
 
-def cert_deploy_files(cert_id: int) -> dict[str, Any]:
+def cert_deploy_files(cert_id: int, target: str | None = None) -> dict[str, Any]:
     """Push acme.sh-issued cert to nginx-ui's expected paths + reload nginx."""
-    backend = get_backend()
+    backend = get_backend(target)
     rows = backend.query_db(
         _db_path(),
         "SELECT id, domains, ssl_certificate_path, ssl_certificate_key_path, key_type "

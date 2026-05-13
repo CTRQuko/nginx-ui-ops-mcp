@@ -59,7 +59,7 @@ def _ok(stdout="", stderr="", rc=0):
 def fake(monkeypatch):
     f = FakeBackend()
     reset_cache()
-    monkeypatch.setattr(ops_mod, "get_backend", lambda: f)
+    monkeypatch.setattr(ops_mod, "get_backend", lambda *a, **kw: f)
     return f
 
 

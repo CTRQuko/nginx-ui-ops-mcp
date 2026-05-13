@@ -129,6 +129,7 @@ class WrapperLXCBackend(NginxUIBackend):
 
     @classmethod
     def from_env(cls) -> "WrapperLXCBackend":
+        """Legacy single-target mode — reads NGINXUI_* vars directly."""
         pve = os.environ.get("NGINXUI_PVE_SSH_ALIAS", "").strip()
         lxc = os.environ.get("NGINXUI_LXC_ID", "").strip()
         if not pve:
@@ -145,6 +146,41 @@ class WrapperLXCBackend(NginxUIBackend):
             sudo_password_ref=os.environ.get("NGINXUI_SUDO_PASSWORD_REF") or None,
             ssh_bin=os.environ.get("NGINXUI_SSH_BIN", "ssh"),
             pct_path=os.environ.get("NGINXUI_PCT_PATH", "/usr/sbin/pct"),
+        )
+
+    @classmethod
+    def from_env_target(cls, target: str) -> "WrapperLXCBackend":
+        """Multi-target mode (v0.4.0+) — reads NGINXUI_TARGET_<TARGET>_* vars.
+
+        Example for target ``logrono``::
+
+            NGINXUI_TARGET_LOGRONO_PVE_SSH_ALIAS=<pve-ssh-alias>
+            NGINXUI_TARGET_LOGRONO_LXC_ID=<lxc-id>
+            NGINXUI_TARGET_LOGRONO_WRAPPER_PATH=/usr/local/bin/claude-wrapper  # opt
+            NGINXUI_TARGET_LOGRONO_SUDO_METHOD=password                        # opt
+            NGINXUI_TARGET_LOGRONO_SUDO_PASSWORD_REF=...                       # opt
+        """
+        prefix = f"NGINXUI_TARGET_{target.upper()}_"
+        pve = os.environ.get(f"{prefix}PVE_SSH_ALIAS", "").strip()
+        lxc = os.environ.get(f"{prefix}LXC_ID", "").strip()
+        if not pve:
+            raise BackendError(
+                f"{prefix}PVE_SSH_ALIAS is required for wrapper-lxc target {target!r}"
+            )
+        if not lxc:
+            raise BackendError(
+                f"{prefix}LXC_ID is required for wrapper-lxc target {target!r}"
+            )
+        return cls(
+            pve_ssh_alias=pve,
+            lxc_id=lxc,
+            wrapper_path=os.environ.get(
+                f"{prefix}WRAPPER_PATH", "/usr/local/bin/claude-wrapper"
+            ),
+            sudo_method=os.environ.get(f"{prefix}SUDO_METHOD", "nopasswd").strip(),
+            sudo_password_ref=os.environ.get(f"{prefix}SUDO_PASSWORD_REF") or None,
+            ssh_bin=os.environ.get(f"{prefix}SSH_BIN", "ssh"),
+            pct_path=os.environ.get(f"{prefix}PCT_PATH", "/usr/sbin/pct"),
         )
 
     def describe(self) -> str:

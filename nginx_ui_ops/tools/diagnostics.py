@@ -112,14 +112,14 @@ _PID_RE = re.compile(r"Main PID:\s+(\d+)")
 _ACTIVE_RE = re.compile(r"Active:\s+(\w+)\s+\((\w+)\)")
 
 
-def nginx_status() -> dict[str, Any]:
+def nginx_status(target: str | None = None) -> dict[str, Any]:
     """systemctl status nginx + worker count + uptime.
 
     Returns NginxStatusResult dict. All best-effort: if systemctl fails
     or output format differs, fields default to None and the raw output
     is preserved for the caller to inspect.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     res = backend.run_cmd(["systemctl", "status", "nginx"], timeout=10)
 
     # systemctl status returns 3 when service is dead; output is still
@@ -186,7 +186,7 @@ def nginx_status() -> dict[str, Any]:
 # nginx_dump_config
 # ---------------------------------------------------------------------------
 
-def nginx_dump_config() -> dict[str, Any]:
+def nginx_dump_config(target: str | None = None) -> dict[str, Any]:
     """nginx -T — full effective merged configuration.
 
     Returns dict with raw output + a synthetic ``ok`` flag. nginx -T
@@ -194,7 +194,7 @@ def nginx_dump_config() -> dict[str, Any]:
     config file the master would load. Useful for "what's actually
     going to be served" without having to walk include directives.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     res = backend.run_cmd(["nginx", "-T"], sudo=True, timeout=15)
     return {
         "ok": res.ok,
@@ -213,6 +213,7 @@ def nginx_logs(
     file: str = "error.log",
     lines: int = 100,
     grep: str = "",
+    target: str | None = None,
 ) -> dict[str, Any]:
     """Snapshot tail of an nginx log file with optional grep filter.
 
@@ -236,7 +237,7 @@ def nginx_logs(
             raise ValueError(f"file must be a flat name, got {file!r}")
         target = f"{_log_dir().rstrip('/')}/{file}"
 
-    backend = get_backend()
+    backend = get_backend(target)
     if grep:
         # tail -n N <file> | grep -i -E '<pattern>'
         # Use shlex.quote on grep to avoid command injection — backend
@@ -270,13 +271,13 @@ def nginx_logs(
 # nginx_compiled_with
 # ---------------------------------------------------------------------------
 
-def nginx_compiled_with() -> dict[str, Any]:
+def nginx_compiled_with(target: str | None = None) -> dict[str, Any]:
     """nginx -V parsed: version, TLS lib, prefix, configure flags.
 
     nginx -V writes to stderr (not stdout — historic quirk). The
     backend captures both, we read stderr.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     res = backend.run_cmd(["nginx", "-V"], timeout=10)
     raw = res.stderr or res.stdout
 
@@ -325,7 +326,7 @@ _STUB_TOTALS_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s*$", re.MULTILINE)
 _STUB_RWW_RE = re.compile(r"Reading:\s*(\d+)\s+Writing:\s*(\d+)\s+Waiting:\s*(\d+)")
 
 
-def nginx_active_conns() -> dict[str, Any]:
+def nginx_active_conns(target: str | None = None) -> dict[str, Any]:
     """Runtime stats from stub_status module.
 
     Tries common endpoints in order:
@@ -336,7 +337,7 @@ def nginx_active_conns() -> dict[str, Any]:
     If none reachable, returns enabled=False with hint how to mount
     a stub_status block. Never raises.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     candidates = [
         "http://127.0.0.1/nginx_status",
         "http://127.0.0.1/stub_status",
@@ -385,7 +386,7 @@ def nginx_active_conns() -> dict[str, Any]:
 # nginx_pending_changes
 # ---------------------------------------------------------------------------
 
-def nginx_pending_changes() -> dict[str, Any]:
+def nginx_pending_changes(target: str | None = None) -> dict[str, Any]:
     """Files under config dir with mtime newer than nginx service start.
 
     Pragmatic "is there anything pending a reload?" — compares mtime of
@@ -397,7 +398,7 @@ def nginx_pending_changes() -> dict[str, Any]:
     - If the service hasn't started, returns has_pending=False (nothing
       to reload yet).
     """
-    backend = get_backend()
+    backend = get_backend(target)
     # Get service start time (single systemctl show call).
     show = backend.run_cmd(
         ["systemctl", "show", "nginx", "--property=ActiveEnterTimestamp"],
@@ -456,7 +457,7 @@ def nginx_pending_changes() -> dict[str, Any]:
 # nginx_test_with_diff
 # ---------------------------------------------------------------------------
 
-def nginx_test_with_diff(target_path: str, proposed_content: str) -> dict[str, Any]:
+def nginx_test_with_diff(target_path: str, proposed_content: str, target: str | None = None) -> dict[str, Any]:
     """Validate a proposed change to a config file WITHOUT touching prod.
 
     Strategy:
@@ -479,7 +480,7 @@ def nginx_test_with_diff(target_path: str, proposed_content: str) -> dict[str, A
     """
     if not target_path.startswith("/"):
         raise ValueError(f"target_path must be absolute, got {target_path!r}")
-    backend = get_backend()
+    backend = get_backend(target)
     config_dir = _config_dir()
     if not target_path.startswith(config_dir.rstrip("/") + "/"):
         raise ValueError(
@@ -576,7 +577,7 @@ def nginx_test_with_diff(target_path: str, proposed_content: str) -> dict[str, A
 # nginx_read_file
 # ---------------------------------------------------------------------------
 
-def nginx_read_file(path: str) -> dict[str, Any]:
+def nginx_read_file(path: str, target: str | None = None) -> dict[str, Any]:
     """Read raw content of a file under the nginx config dir.
 
     Read-only. Refuses paths outside NGINXUI_CONFIG_DIR (default /etc/nginx)
@@ -592,7 +593,7 @@ def nginx_read_file(path: str) -> dict[str, Any]:
             f"path {path!r} must be under {config_dir!r} (refusing to read arbitrary files)"
         )
 
-    backend = get_backend()
+    backend = get_backend(target)
     raw = backend.read_file(path, sudo=True)
     truncated = False
     if len(raw) > READ_FILE_CAP_BYTES:

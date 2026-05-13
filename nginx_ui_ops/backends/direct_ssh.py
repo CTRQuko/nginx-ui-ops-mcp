@@ -81,6 +81,7 @@ class DirectSSHBackend(NginxUIBackend):
 
     @classmethod
     def from_env(cls) -> "DirectSSHBackend":
+        """Legacy single-target mode — reads NGINXUI_* vars directly."""
         host = os.environ.get("NGINXUI_HOST", "").strip()
         if not host:
             raise BackendError("NGINXUI_HOST is required for direct-ssh backend")
@@ -90,6 +91,31 @@ class DirectSSHBackend(NginxUIBackend):
             sudo_method=os.environ.get("NGINXUI_SUDO_METHOD", "nopasswd").strip(),
             sudo_password_ref=os.environ.get("NGINXUI_SUDO_PASSWORD_REF") or None,
             ssh_bin=os.environ.get("NGINXUI_SSH_BIN", "ssh"),
+        )
+
+    @classmethod
+    def from_env_target(cls, target: str) -> "DirectSSHBackend":
+        """Multi-target mode (v0.4.0+) — reads NGINXUI_TARGET_<TARGET>_* vars.
+
+        Example for target ``edge``::
+
+            NGINXUI_TARGET_EDGE_HOST=nginx-edge.example.com
+            NGINXUI_TARGET_EDGE_SSH_USER=claude                # opt
+            NGINXUI_TARGET_EDGE_SUDO_METHOD=nopasswd           # opt
+            NGINXUI_TARGET_EDGE_SUDO_PASSWORD_REF=...          # opt
+        """
+        prefix = f"NGINXUI_TARGET_{target.upper()}_"
+        host = os.environ.get(f"{prefix}HOST", "").strip()
+        if not host:
+            raise BackendError(
+                f"{prefix}HOST is required for direct-ssh target {target!r}"
+            )
+        return cls(
+            host=host,
+            ssh_user=os.environ.get(f"{prefix}SSH_USER", "").strip(),
+            sudo_method=os.environ.get(f"{prefix}SUDO_METHOD", "nopasswd").strip(),
+            sudo_password_ref=os.environ.get(f"{prefix}SUDO_PASSWORD_REF") or None,
+            ssh_bin=os.environ.get(f"{prefix}SSH_BIN", "ssh"),
         )
 
     def describe(self) -> str:

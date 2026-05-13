@@ -78,6 +78,133 @@ def _detect_dns_provider() -> str | None:
     return None
 
 
+def _detect_multi_target() -> dict[str, Any] | None:
+    """Return a status dict if NGINXUI_TARGETS is declared, else None.
+
+    Multi-target mode (v0.4.0+) overrides the legacy wizard flow. For
+    each declared target, this checks whether ``NGINXUI_TARGET_<T>_BACKEND``
+    is set and whether the per-backend required vars are present.
+
+    Returns:
+        - ``None`` if NGINXUI_TARGETS is NOT set (caller falls through
+          to legacy wizard).
+        - ``{"status": "ready_multi_target", ...}`` if all targets are
+          fully configured.
+        - ``{"status": "multi_target_partial", ...}`` if any target is
+          missing required vars.
+    """
+    raw = os.environ.get("NGINXUI_TARGETS", "").strip()
+    if not raw:
+        return None
+    targets = [t.strip() for t in raw.split(",") if t.strip()]
+    if not targets:
+        return None
+
+    inventory: list[dict[str, Any]] = []
+    missing_targets: list[dict[str, Any]] = []
+
+    # Per-backend required vars (target-scoped). Keys match the
+    # _BACKEND_REQUIRED_VARS layout but suffixed for multi-target.
+    multi_required: dict[str, list[str]] = {
+        "wrapper-lxc": ["PVE_SSH_ALIAS", "LXC_ID"],
+        "direct-ssh": ["HOST"],
+        "docker-exec": ["DOCKER_SSH_ALIAS", "DOCKER_CONTAINER"],
+    }
+
+    for t in targets:
+        norm = t.upper()
+        be = os.environ.get(f"NGINXUI_TARGET_{norm}_BACKEND", "").strip().lower()
+        if not be:
+            missing_targets.append({
+                "target": t,
+                "missing": [f"NGINXUI_TARGET_{norm}_BACKEND"],
+                "hint": (
+                    f"Declare backend for target {t!r}: "
+                    f"router_add_credential('NGINXUI_TARGET_{norm}_BACKEND', "
+                    f"'wrapper-lxc|direct-ssh|docker-exec')"
+                ),
+            })
+            continue
+        if be not in multi_required:
+            missing_targets.append({
+                "target": t,
+                "backend": be,
+                "missing": [],
+                "hint": (
+                    f"Backend {be!r} for target {t!r} unknown. "
+                    f"Supported: {sorted(multi_required)}"
+                ),
+            })
+            continue
+        missing = [
+            f"NGINXUI_TARGET_{norm}_{var}"
+            for var in multi_required[be]
+            if not _is_set(f"NGINXUI_TARGET_{norm}_{var}")
+        ]
+        if missing:
+            missing_targets.append({
+                "target": t,
+                "backend": be,
+                "missing": missing,
+                "hint": (
+                    f"Set the missing vars for target {t!r}: " + ", ".join(missing)
+                ),
+            })
+            continue
+        # Target fully configured
+        inventory.append({
+            "target": t,
+            "backend": be,
+            "vars": {
+                v: os.environ.get(f"NGINXUI_TARGET_{norm}_{v}", "")
+                for v in multi_required[be]
+            },
+        })
+
+    default_t = (
+        os.environ.get("NGINXUI_DEFAULT_TARGET", "").strip()
+        or (targets[0] if targets else None)
+    )
+    mutations_enabled = os.environ.get(
+        "NGINXUI_ALLOW_MUTATIONS", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    if missing_targets:
+        return {
+            "status": "multi_target_partial",
+            "declared_targets": targets,
+            "default_target": default_t,
+            "configured": inventory,
+            "missing": missing_targets,
+            "mutations_enabled": mutations_enabled,
+            "message": (
+                f"Multi-target mode detectado ({len(targets)} declarados). "
+                f"{len(inventory)} OK, {len(missing_targets)} con vars "
+                "incompletas. Completa via router_add_credential según los "
+                "hints, después re-llama nginxui_setup() para verificar."
+            ),
+        }
+
+    return {
+        "status": "ready_multi_target",
+        "declared_targets": targets,
+        "default_target": default_t,
+        "configured": inventory,
+        "mutations_enabled": mutations_enabled,
+        "message": (
+            f"Multi-target mode OK. {len(inventory)} targets configurados: "
+            f"{', '.join(t['target'] + '(' + t['backend'] + ')' for t in inventory)}. "
+            f"Default: {default_t}. "
+            + (
+                "Mutations HABILITADAS — las 8 tools de mutación están disponibles."
+                if mutations_enabled
+                else "Mutations DESHABILITADAS — solo read-only. Para activar: "
+                "router_add_credential('NGINXUI_ALLOW_MUTATIONS', 'true') + restart."
+            )
+        ),
+    }
+
+
 def nginxui_setup() -> dict[str, Any]:
     """Conversational setup wizard. Detects state, returns next steps.
 
@@ -90,14 +217,23 @@ def nginxui_setup() -> dict[str, Any]:
       5. Re-call this tool to advance to the next stage.
 
     Stages (``status`` values):
-      - ``needs_backend``: first run, no NGINXUI_BACKEND set
+      - ``needs_backend``: first run, no NGINXUI_BACKEND set (legacy mode)
       - ``invalid_backend``: NGINXUI_BACKEND value not supported
       - ``needs_backend_config``: backend chosen, missing per-backend vars
       - ``ready_readonly``: backend complete, optional DNS creds suggested
       - ``ready_full``: all suggested creds set, plugin fully configured
+      - ``ready_multi_target`` (v0.4.0+): NGINXUI_TARGETS declared, all
+         targets resolved successfully. Includes target inventory.
+      - ``multi_target_partial`` (v0.4.0+): NGINXUI_TARGETS declared but
+         some target has misconfigured backend vars.
 
     Status is a stable contract — safe to branch on.
     """
+    # v0.4.0: multi-target mode takes precedence if NGINXUI_TARGETS is set.
+    multi = _detect_multi_target()
+    if multi is not None:
+        return multi
+
     backend = os.environ.get("NGINXUI_BACKEND", "").strip().lower()
 
     # ---- Stage 1: backend not chosen yet ---------------------------------

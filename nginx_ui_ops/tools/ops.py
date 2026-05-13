@@ -53,7 +53,7 @@ def _backup_suffix() -> str:
 # nginx_write_file
 # ---------------------------------------------------------------------------
 
-def nginx_write_file(path: str, content: str) -> dict[str, Any]:
+def nginx_write_file(path: str, content: str, target: str | None = None) -> dict[str, Any]:
     """Atomic write to a config file under /etc/nginx/ with rollback on test failure.
 
     Workflow:
@@ -89,7 +89,7 @@ def nginx_write_file(path: str, content: str) -> dict[str, Any]:
             f"path {path!r} must be under {config_dir!r} (refusing to write outside)"
         )
 
-    backend = get_backend()
+    backend = get_backend(target)
     encoded = content.encode("utf-8")
 
     # Step 1: try to read current content for backup. Missing is OK
@@ -163,7 +163,7 @@ def nginx_write_file(path: str, content: str) -> dict[str, Any]:
 # nginx_full_restart
 # ---------------------------------------------------------------------------
 
-def nginx_full_restart() -> dict[str, Any]:
+def nginx_full_restart(target: str | None = None) -> dict[str, Any]:
     """Full ``systemctl restart nginx`` — drops connections momentarily.
 
     Use ``nginx_reload`` (graceful) when possible; reach for this only
@@ -176,7 +176,7 @@ def nginx_full_restart() -> dict[str, Any]:
 
     Returns NginxControlResult dict.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     # Safety: validate before restart.
     test_res = backend.run_cmd(["nginx", "-t"], sudo=True, timeout=10)
     if not test_res.ok:
@@ -211,7 +211,7 @@ def nginx_full_restart() -> dict[str, Any]:
 # nginx_reopen_logs
 # ---------------------------------------------------------------------------
 
-def nginx_reopen_logs() -> dict[str, Any]:
+def nginx_reopen_logs(target: str | None = None) -> dict[str, Any]:
     """``nginx -s reopen`` — reopen log files without dropping connections.
 
     Sends SIGUSR1 to the master. Useful after manual logrotate, after
@@ -220,7 +220,7 @@ def nginx_reopen_logs() -> dict[str, Any]:
 
     Returns NginxControlResult dict.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     res = backend.run_cmd(["nginx", "-s", "reopen"], sudo=True, timeout=10)
     return NginxControlResult(
         action="reopen_logs",
@@ -240,7 +240,7 @@ def nginx_reopen_logs() -> dict[str, Any]:
 # nginx_quit
 # ---------------------------------------------------------------------------
 
-def nginx_quit() -> dict[str, Any]:
+def nginx_quit(target: str | None = None) -> dict[str, Any]:
     """``nginx -s quit`` — graceful shutdown. Operator must start again.
 
     Sends SIGQUIT to the master. Existing connections finish, no new
@@ -255,7 +255,7 @@ def nginx_quit() -> dict[str, Any]:
     Returns NginxControlResult dict with a clear note that nginx is
     now stopped.
     """
-    backend = get_backend()
+    backend = get_backend(target)
     res = backend.run_cmd(["nginx", "-s", "quit"], sudo=True, timeout=15)
     return NginxControlResult(
         action="quit",
