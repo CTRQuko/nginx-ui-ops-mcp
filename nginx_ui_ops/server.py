@@ -34,9 +34,19 @@ mcp = FastMCP("nginx-ui-ops")
 def _allow_mutations() -> bool:
     """Read the mutation gate.
 
-    Source of truth in production is the plugin.toml ``[security].allow_mutations``,
-    which mimir parses and exposes via env var ``NGINXUI_ALLOW_MUTATIONS``.
-    For standalone use (no mimir), the same env var works as override.
+    Source of truth is the env var ``NGINXUI_ALLOW_MUTATIONS``. Mimir
+    injects it from its scoped vault if the operator persisted it via
+    ``router_add_credential('NGINXUI_ALLOW_MUTATIONS', 'true')`` — for
+    that to be accepted, the plugin.toml must declare the ref in
+    ``[security].credential_refs`` (already done since 2026-05-11).
+
+    The ``[security].allow_mutations`` flag in ``plugin.toml`` is NOT
+    read by mimir-mcp core (verified 2026-05-11) — it's only an intent
+    marker. Setting it to ``true`` in the manifest does NOT enable
+    mutations on its own; the credential must be present.
+
+    For standalone use (no mimir), set the env var directly before
+    invoking the server.
 
     Default false — operator opts in explicitly.
     """

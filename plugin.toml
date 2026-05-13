@@ -12,9 +12,18 @@ command = "uv"
 args = ["run", "nginx-ui-ops-mcp"]
 
 [security]
-# Mutation gating: when false (default), the 8 mutating tools are NOT
-# exposed to the MCP client — only the 12 read-only ones (+ wizard) are.
-# Operator flips this to true explicitly when authorizing mutations.
+# Mutation gating: the 8 mutating tools are exposed only when the env
+# var NGINXUI_ALLOW_MUTATIONS=true reaches the plugin subprocess.
+#
+# IMPORTANT: this `allow_mutations` flag below is INTENT MARKER ONLY.
+# Mimir-mcp core does NOT propagate it as env var (verified 2026-05-11).
+# To actually enable mutations:
+#   router_add_credential('NGINXUI_ALLOW_MUTATIONS', 'true')
+# + restart the MCP client so mimir reloads its vault and injects the
+# env var into the plugin subprocess.
+#
+# Standalone usage (no mimir): export NGINXUI_ALLOW_MUTATIONS=true
+# before starting the server.
 #
 # Mutating tools (gated, 8):
 #   cert_issue              — emite cert vía acme.sh (gasta cuota Let's Encrypt)
