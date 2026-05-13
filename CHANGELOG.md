@@ -7,6 +7,17 @@ SemVer.
 
 ## [Unreleased]
 
+### Pending operator action
+
+- **PyPI first upload of `nginx-ui-ops-mcp`** — el token actual en
+  `C:/homelab/.config/secrets/pypi.md` está scoped a
+  `project:mimir-router-mcp` y no puede crear paquetes nuevos. Para
+  publicar v0.4.0 hace falta generar un token de cuenta (one-time) o
+  configurar Trusted Publishing (OIDC) en
+  https://pypi.org/manage/account/token/. Artifacts ya construidos en
+  `dist/nginx_ui_ops_mcp-0.4.0-{whl,tar.gz}` y verificados con
+  `twine check` PASSED.
+
 ## [0.4.0] — 2026-05-14 — Multi-target + `docker-exec` backend
 
 ### Added
