@@ -5,18 +5,31 @@ All notable changes to nginx-ui-ops-mcp documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 SemVer.
 
+## Distribución
+
+v0.4.0 (y siguientes hasta nuevo aviso) **NO se publica en PyPI**.
+Paquete de uso interno homelab; sin necesidad de descubrimiento
+público en PyPI.
+
+Instalación recomendada:
+
+```bash
+pip install git+https://github.com/CTRQuko/nginx-ui-ops-mcp.git@v0.4.0
+```
+
+O pin por tag en `mimir-mcp/plugin.toml`:
+
+```toml
+source = "git+https://github.com/CTRQuko/nginx-ui-ops-mcp.git@v0.4.0"
+```
+
+Si en el futuro cambia el caso de uso (multi-tenant, descubrimiento
+público, mirror corporativo), ver las vías documentadas en
+`~/.claude/plans/mimir-mpc-verificar-si-elegant-sun.md` — Vía A
+(token account efímero + project-scope post-bootstrap) o Vía B
+(Trusted Publishing via GitHub OIDC).
+
 ## [Unreleased]
-
-### Pending operator action
-
-- **PyPI first upload of `nginx-ui-ops-mcp`** — el token actual en
-  `C:/homelab/.config/secrets/pypi.md` está scoped a
-  `project:mimir-router-mcp` y no puede crear paquetes nuevos. Para
-  publicar v0.4.0 hace falta generar un token de cuenta (one-time) o
-  configurar Trusted Publishing (OIDC) en
-  https://pypi.org/manage/account/token/. Artifacts ya construidos en
-  `dist/nginx_ui_ops_mcp-0.4.0-{whl,tar.gz}` y verificados con
-  `twine check` PASSED.
 
 ## [0.4.0] — 2026-05-14 — Multi-target + `docker-exec` backend
 
