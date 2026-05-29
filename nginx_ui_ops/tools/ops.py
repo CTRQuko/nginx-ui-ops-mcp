@@ -28,6 +28,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from .._paths import validate_under_dir
 from ..backends import BackendError, get_backend
 from ..models import NginxControlResult, NginxFileWriteResult
 
@@ -47,6 +48,25 @@ def _backup_suffix() -> str:
     the same second, but realistic ops are seconds apart.
     """
     return ".bak-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def _read_remote_mode(backend, path: str) -> int:
+    """Best-effort read of POSIX mode of a remote file. Returns 0o644
+    on any failure (safe default for nginx config files).
+
+    [VULN-14] mitigation: backups inherit the source file's mode so
+    secrets in 0600 includes don't leak via 0644 backups.
+    """
+    try:
+        res = backend.run_cmd(["stat", "-c", "%a", path], sudo=True, timeout=5)
+    except BackendError:
+        return 0o644
+    if not res.ok or not res.stdout.strip():
+        return 0o644
+    try:
+        return int(res.stdout.strip(), 8)
+    except ValueError:
+        return 0o644
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +101,8 @@ def nginx_write_file(path: str, content: str, target: str | None = None) -> dict
         ValueError: path validation failed (rejected pre-flight).
         BackendError: file I/O failed unrecoverably.
     """
-    if not path.startswith("/"):
-        raise ValueError(f"path must be absolute, got {path!r}")
-    config_dir = _config_dir()
-    if not path.startswith(config_dir.rstrip("/") + "/"):
-        raise ValueError(
-            f"path {path!r} must be under {config_dir!r} (refusing to write outside)"
-        )
+    # [VULN-01] mitigation — canonicalize + reject '..' BEFORE any I/O.
+    path = validate_under_dir(path, _config_dir(), label="path")
 
     backend = get_backend(target)
     encoded = content.encode("utf-8")
@@ -96,24 +111,30 @@ def nginx_write_file(path: str, content: str, target: str | None = None) -> dict
     # (this is a new file).
     backup_path: str | None = None
     prior_content: bytes | None = None
+    prior_mode: int = 0o644
     try:
         prior_content = backend.read_file(path, sudo=True)
     except BackendError:
         prior_content = None
 
     if prior_content is not None:
+        # [VULN-14] preserve the original mode so 0600 includes don't
+        # leak via a 0644 backup.
+        prior_mode = _read_remote_mode(backend, path)
         backup_path = path + _backup_suffix()
         try:
-            backend.push_file(prior_content, backup_path, mode=0o644, sudo=True)
+            backend.push_file(prior_content, backup_path, mode=prior_mode, sudo=True)
         except BackendError as e:
             # If we can't back up, abort BEFORE touching the live file.
             raise BackendError(
                 f"refusing to write {path}: backup to {backup_path} failed: {e}"
             ) from e
 
-    # Step 2: push new content.
+    # Step 2: push new content (preserve original mode if known,
+    # otherwise default 0644 for new config files).
+    write_mode = prior_mode if prior_content is not None else 0o644
     try:
-        backend.push_file(encoded, path, mode=0o644, sudo=True)
+        backend.push_file(encoded, path, mode=write_mode, sudo=True)
     except BackendError as e:
         raise BackendError(f"failed to write {path}: {e}") from e
 
@@ -135,7 +156,7 @@ def nginx_write_file(path: str, content: str, target: str | None = None) -> dict
     rolled_back = False
     if backup_path is not None and prior_content is not None:
         try:
-            backend.push_file(prior_content, path, mode=0o644, sudo=True)
+            backend.push_file(prior_content, path, mode=prior_mode, sudo=True)
             rolled_back = True
         except BackendError as e:
             log.error("rollback push failed for %s: %s", path, e)

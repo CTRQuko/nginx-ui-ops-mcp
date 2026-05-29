@@ -26,6 +26,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import Any
 
+from .._paths import validate_under_dir
 from ..backends import BackendError, get_backend
 from ..models import (
     NginxActiveConns,
@@ -229,40 +230,44 @@ def nginx_logs(
         raise ValueError(f"invalid log file: {file!r}")
     lines = max(1, min(int(lines), MAX_LOG_LINES))
 
+    # [VULN-02] mitigation — DO NOT shadow the `target` parameter
+    # (which is the multi-target instance name, not a filesystem path).
     if file.startswith("/"):
-        target = file
+        log_path = file
     else:
         # Reject path traversal in relative names.
         if ".." in file or "/" in file:
             raise ValueError(f"file must be a flat name, got {file!r}")
-        target = f"{_log_dir().rstrip('/')}/{file}"
+        log_path = f"{_log_dir().rstrip('/')}/{file}"
 
     backend = get_backend(target)
-    if grep:
-        # tail -n N <file> | grep -i -E '<pattern>'
-        # Use shlex.quote on grep to avoid command injection — backend
-        # may run via shell on some transports.
-        cmd = [
-            "sh", "-c",
-            f"tail -n {lines} {shlex.quote(target)} | grep -iE {shlex.quote(grep)} || true",
-        ]
-    else:
-        cmd = ["tail", "-n", str(lines), target]
 
+    # [VULN-08] mitigation — never push the operator-supplied regex
+    # through a remote shell. Tail the file (no shell), then filter
+    # the bytes locally.
+    cmd = ["tail", "-n", str(lines), log_path]
     res = backend.run_cmd(cmd, sudo=True, timeout=15)
-    if not res.ok and not grep:
-        # tail-only failure (e.g. file not found) → bubble up.
+    if not res.ok:
+        # tail failure (file not found, permission denied, etc.) → bubble up.
         raise BackendError(
-            f"reading {target}: rc={res.return_code} stderr={res.stderr[:200]}"
+            f"reading {log_path}: rc={res.return_code} stderr={res.stderr[:200]}"
         )
 
-    content_lines = res.stdout.splitlines()
+    content_lines = res.stdout.splitlines(keepends=True)
+    if grep:
+        try:
+            pattern = re.compile(grep, re.IGNORECASE)
+        except re.error as e:
+            raise ValueError(f"invalid grep regex {grep!r}: {e}") from e
+        content_lines = [ln for ln in content_lines if pattern.search(ln)]
+
+    filtered = "".join(content_lines)
     return NginxLogResult(
-        file=target,
+        file=log_path,
         lines_returned=len(content_lines),
         lines_requested=lines,
         grep_filter=grep or None,
-        content=res.stdout,
+        content=filtered,
         truncated=len(content_lines) >= lines,
     ).model_dump()
 
@@ -478,14 +483,12 @@ def nginx_test_with_diff(target_path: str, proposed_content: str, target: str | 
 
     Returns NginxTestWithDiffResult dict.
     """
-    if not target_path.startswith("/"):
-        raise ValueError(f"target_path must be absolute, got {target_path!r}")
+    # [VULN-09] mitigation — canonicalize + reject '..' BEFORE any I/O.
+    target_path = validate_under_dir(
+        target_path, _config_dir(), label="target_path",
+    )
     backend = get_backend(target)
     config_dir = _config_dir()
-    if not target_path.startswith(config_dir.rstrip("/") + "/"):
-        raise ValueError(
-            f"target_path {target_path!r} must be under {config_dir!r}"
-        )
 
     # Read current content for diff (best-effort).
     current_content = ""
@@ -585,13 +588,13 @@ def nginx_read_file(path: str, target: str | None = None) -> dict[str, Any]:
     READ_FILE_CAP_BYTES (256 KB default) — enough for any realistic
     nginx config; if you hit the cap, your config has bigger problems.
     """
-    if not path.startswith("/"):
-        raise ValueError(f"path must be absolute, got {path!r}")
-    config_dir = _config_dir()
-    if not path.startswith(config_dir.rstrip("/") + "/") and path != config_dir.rstrip("/"):
-        raise ValueError(
-            f"path {path!r} must be under {config_dir!r} (refusing to read arbitrary files)"
-        )
+    # [VULN-10] mitigation — canonicalize + reject '..'. allow_root
+    # preserves v0.3.0 behavior: reading the config dir itself was
+    # permitted (returns whatever `cat /etc/nginx` does — typically
+    # an error, but historically not blocked).
+    path = validate_under_dir(
+        path, _config_dir(), label="path", allow_root=True,
+    )
 
     backend = get_backend(target)
     raw = backend.read_file(path, sudo=True)

@@ -308,10 +308,10 @@ def test_cert_issue_idempotent_when_existing_has_more_than_threshold_days(fake_b
 def test_cert_issue_force_skips_idempotence(fake_backend):
     """force=True triggers a real acme_issue even with valid cert."""
     fake_backend.query_responses = [[]]  # no existing match (force skips check)
-    # Lock check + lock touch + lock release
-    not_locked = MagicMock(); not_locked.ok = False; not_locked.return_code = 1
-    locked_ok = MagicMock(); locked_ok.ok = True
-    fake_backend.command_responses = [not_locked, locked_ok, locked_ok]
+    # [VULN-05] lock: mkdir to acquire + rmdir to release (2 ops, both ok).
+    mkdir_ok = MagicMock(); mkdir_ok.ok = True; mkdir_ok.return_code = 0
+    rmdir_ok = MagicMock(); rmdir_ok.ok = True; rmdir_ok.return_code = 0
+    fake_backend.command_responses = [mkdir_ok, rmdir_ok]
 
     result = cert_issue(["a.com"], force=True)
     assert result["action"] == "issued_new"
@@ -328,20 +328,21 @@ def test_cert_issue_re_issues_when_threshold_exceeded(fake_backend):
         }],
     ]
     fake_backend.reads["/x/full"] = _make_cert_pem_with_days_remaining(5)
-    # Lock acquire chain.
-    not_locked = MagicMock(); not_locked.ok = False; not_locked.return_code = 1
-    ok = MagicMock(); ok.ok = True
-    fake_backend.command_responses = [not_locked, ok, ok]
+    # [VULN-05] mkdir + rmdir for atomic lock.
+    mkdir_ok = MagicMock(); mkdir_ok.ok = True
+    rmdir_ok = MagicMock(); rmdir_ok.ok = True
+    fake_backend.command_responses = [mkdir_ok, rmdir_ok]
 
     result = cert_issue(["a.com"])
     assert result["action"] == "issued_new"
 
 
 def test_cert_issue_lock_held_raises(fake_backend):
-    """If acme lock file exists, bail with BackendError."""
+    """If acme lock dir exists, mkdir fails → bail with BackendError."""
     fake_backend.query_responses = [[]]  # no existing match
-    locked = MagicMock(); locked.ok = True; locked.return_code = 0  # test -e succeeds
-    fake_backend.command_responses = [locked]
+    # mkdir returns non-zero when the dir already exists.
+    mkdir_fail = MagicMock(); mkdir_fail.ok = False; mkdir_fail.return_code = 1
+    fake_backend.command_responses = [mkdir_fail]
 
     with pytest.raises(BackendError, match="lock"):
         cert_issue(["a.com"])
@@ -357,10 +358,12 @@ def test_cert_issue_empty_domains_raises(fake_backend):
 # ---------------------------------------------------------------------------
 
 def test_cert_deploy_files_pushes_with_correct_modes(fake_backend):
+    # [VULN-03] mitigation — dest paths must be under an allowed cert
+    # deploy dir. Use /etc/nginx/ssl/ which is under default allowlist.
     fake_backend.query_responses = [[
         {"id": 1, "domains": '["*.example.com"]',
-         "ssl_certificate_path": "/dest/full",
-         "ssl_certificate_key_path": "/dest/key",
+         "ssl_certificate_path": "/etc/nginx/ssl/full.pem",
+         "ssl_certificate_key_path": "/etc/nginx/ssl/key.pem",
          "key_type": "P256"},
     ]]
     # acme.sh paths derived: /root/.acme.sh/*.example.com_ecc/...
@@ -378,8 +381,8 @@ def test_cert_deploy_files_pushes_with_correct_modes(fake_backend):
     pushes = fake_backend.pushes
     assert len(pushes) == 2
     # Modes: 0o644 fullchain, 0o600 key.
-    fullchain_push = next(p for p in pushes if p[1] == "/dest/full")
-    key_push = next(p for p in pushes if p[1] == "/dest/key")
+    fullchain_push = next(p for p in pushes if p[1] == "/etc/nginx/ssl/full.pem")
+    key_push = next(p for p in pushes if p[1] == "/etc/nginx/ssl/key.pem")
     assert fullchain_push[2] == 0o644
     assert key_push[2] == 0o600
 
@@ -387,8 +390,8 @@ def test_cert_deploy_files_pushes_with_correct_modes(fake_backend):
 def test_cert_deploy_files_skips_reload_when_test_fails(fake_backend):
     fake_backend.query_responses = [[
         {"id": 1, "domains": '["a.com"]',
-         "ssl_certificate_path": "/dest/full",
-         "ssl_certificate_key_path": "/dest/key",
+         "ssl_certificate_path": "/etc/nginx/ssl/full.pem",
+         "ssl_certificate_key_path": "/etc/nginx/ssl/key.pem",
          "key_type": "P256"},
     ]]
     fake_backend.reads["/root/.acme.sh/a.com_ecc/fullchain.cer"] = b"FULLCHAIN"
