@@ -126,14 +126,25 @@ def test_nginx_logs_default_error_log(fake):
 
 
 def test_nginx_logs_with_grep(fake):
-    fake.command_responses = [_ok(stdout="ERROR foo\nERROR bar\n")]
+    """[VULN-08] mitigation: grep is applied client-side (Python re),
+    NOT pushed through `sh -c` to the remote. Command stays a pure
+    `tail` invocation; the regex never crosses the SSH boundary."""
+    fake.command_responses = [
+        _ok(stdout="INFO setup\nERROR foo\nINFO other\nERROR bar\n"),
+    ]
     result = diag.nginx_logs(file="error.log", lines=50, grep="ERROR")
     assert result["grep_filter"] == "ERROR"
-    # Verify command shape uses sh -c with tail | grep.
+    # Command shape: tail only, no shell wrapper, no grep argv.
     cmd = fake.commands[0][0]
-    assert cmd[0] == "sh"
-    assert "tail -n 50" in cmd[2]
-    assert "grep -iE" in cmd[2]
+    assert cmd[0] == "tail"
+    assert "-n" in cmd
+    assert "50" in cmd
+    assert "sh" not in cmd
+    assert "grep" not in cmd
+    # Filter applied client-side: only lines matching ERROR returned.
+    assert "ERROR foo" in result["content"]
+    assert "ERROR bar" in result["content"]
+    assert "INFO" not in result["content"]
 
 
 def test_nginx_logs_absolute_path(fake):

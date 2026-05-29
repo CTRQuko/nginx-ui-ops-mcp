@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from .._paths import validate_under_any
 from ..backends import BackendError, get_backend
 from ..models import (
     CertDeployResult,
@@ -36,12 +37,38 @@ DEFAULT_DB_PATH = "/usr/local/etc/nginx-ui/database.db"
 # Default acme.sh home. Override via NGINXUI_ACME_HOME.
 DEFAULT_ACME_HOME = "/root/.acme.sh"
 
-# Lock file path on the nginx-ui host to prevent races with the cron
-# of acme.sh when this plugin issues a new cert.
-ACME_LOCK_PATH = "/tmp/nginx-ui-ops-acme.lock"
+# Lock directory on the nginx-ui host to prevent races with the cron
+# of acme.sh when this plugin issues a new cert. [VULN-05] mitigation
+# — using a *directory* (created with mkdir, POSIX-atomic) instead of
+# a touched file makes ``test -e`` + ``touch`` TOCTOU impossible.
+ACME_LOCK_PATH = "/tmp/nginx-ui-ops-acme.lock.d"
+
+# Default allowlist of directories where cert files may be deployed.
+# [VULN-03] mitigation — paths read from the nginx-ui DB are validated
+# against this allowlist before push. Operator overrides via
+# NGINXUI_CERT_DEPLOY_DIRS (comma-separated absolute paths).
+DEFAULT_CERT_DEPLOY_DIRS: tuple[str, ...] = (
+    "/etc/nginx/",
+    "/etc/ssl/",
+    "/usr/local/etc/nginx-ui/",
+    "/var/lib/nginx-ui/",
+)
 
 # How long days_remaining must be for cert_issue to skip re-issuance.
 DEFAULT_RENEW_THRESHOLD_DAYS = 30
+
+
+def _cert_deploy_dirs() -> tuple[str, ...]:
+    """Return the allowlist of cert deploy directories.
+
+    Operator override: ``NGINXUI_CERT_DEPLOY_DIRS=/a/,/b/,...``
+    (comma-separated absolute paths). Trailing slashes optional.
+    """
+    raw = os.environ.get("NGINXUI_CERT_DEPLOY_DIRS", "").strip()
+    if not raw:
+        return DEFAULT_CERT_DEPLOY_DIRS
+    parsed = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return parsed or DEFAULT_CERT_DEPLOY_DIRS
 
 
 # ---------------------------------------------------------------------------
@@ -238,44 +265,58 @@ def cert_domains_update(cert_id: int, domains: list[str], target: str | None = N
 
 
 def _collect_provider_env(dns_provider: str) -> dict[str, str]:
-    """Scoop env vars matching the provider's known prefix."""
-    prefix_map = {
-        "dns_cf": ("CF_",),
-        "dns_aws": ("AWS_",),
-        "dns_do": ("DO_",),
-        "dns_gandi": ("GANDI_",),
-        "dns_namecheap": ("NAMECHEAP_",),
-        "dns_namesilo": ("NAMESILO_",),
-        "dns_dynu": ("DYNU_",),
-        "dns_he": ("HE_",),
-        "dns_linode": ("LINODE_",),
-        "dns_ovh": ("OVH_",),
+    """Scoop the recognized env vars for the given acme.sh DNS provider.
+
+    [VULN-12] mitigation — explicit allowlist per provider instead of a
+    prefix match. Avoids accidentally exporting unrelated env vars that
+    happen to share a prefix (e.g. ``CF_OTHER_SERVICE_TOKEN``) to the
+    acme.sh subprocess.
+
+    The lists are the documented env vars for each provider's acme.sh
+    DNS API plugin. If a new provider needs additional vars, extend
+    the mapping here.
+    """
+    explicit_map: dict[str, tuple[str, ...]] = {
+        "dns_cf": (
+            "CF_API_TOKEN", "CF_Token", "CF_Zone_ID", "CF_ZONE_ID",
+            "CF_Account_ID", "CF_API_KEY", "CF_Email", "CF_EMAIL",
+        ),
+        "dns_aws": (
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+            "AWS_REGION", "AWS_SESSION_TOKEN", "AWS_DNS_SLOWRATE",
+        ),
+        "dns_do": ("DO_API_KEY", "DO_API_TOKEN"),
+        "dns_gandi": ("GANDI_LIVEDNS_KEY",),
+        "dns_namecheap": ("NAMECHEAP_API_KEY", "NAMECHEAP_USERNAME", "NAMECHEAP_SOURCEIP"),
+        "dns_namesilo": ("NAMESILO_KEY",),
+        "dns_dynu": ("DYNU_ClientId", "DYNU_Secret"),
+        "dns_he": ("HE_Username", "HE_Password"),
+        "dns_linode": ("LINODE_API_KEY",),
+        "dns_ovh": ("OVH_END_POINT", "OVH_AK", "OVH_AS", "OVH_CK"),
     }
-    prefixes = prefix_map.get(dns_provider)
-    if prefixes is None:
-        return {}
-    out: dict[str, str] = {}
-    for k, v in os.environ.items():
-        for p in prefixes:
-            if k.startswith(p):
-                out[k] = v
-                break
-    return out
+    allowed = explicit_map.get(dns_provider, ())
+    return {k: os.environ[k] for k in allowed if k in os.environ}
 
 
 def _acquire_acme_lock(backend: Any) -> bool:
-    """Best-effort lock acquisition. Returns True if acquired."""
-    check = backend.run_cmd(["test", "-e", ACME_LOCK_PATH], timeout=5)
-    if check.ok:
-        return False
-    touch = backend.run_cmd(["touch", ACME_LOCK_PATH], timeout=5)
-    return touch.ok
+    """Atomic lock acquisition via ``mkdir``.
+
+    [VULN-05] mitigation — ``mkdir`` on POSIX is an atomic operation;
+    if the directory already exists, ``mkdir`` returns non-zero. This
+    closes the TOCTOU window between ``test -e`` and ``touch`` that
+    the previous implementation suffered.
+
+    Returns True if the lock was acquired, False if another process
+    already held it.
+    """
+    res = backend.run_cmd(["mkdir", ACME_LOCK_PATH], timeout=5)
+    return res.ok
 
 
 def _release_acme_lock(backend: Any) -> None:
-    """Best-effort lock release. Failures logged."""
+    """Best-effort lock release (rmdir of the lock directory)."""
     try:
-        backend.run_cmd(["rm", "-f", ACME_LOCK_PATH], timeout=5)
+        backend.run_cmd(["rmdir", ACME_LOCK_PATH], timeout=5)
     except BackendError as e:
         log.warning("Failed to release acme lock: %s", e)
 
@@ -433,6 +474,18 @@ def cert_deploy_files(cert_id: int, target: str | None = None) -> dict[str, Any]
             f"cert {cert_id}: missing ssl_certificate_path / "
             f"ssl_certificate_key_path in DB"
         )
+
+    # [VULN-03] mitigation — validate the DB-controlled paths against
+    # the deploy allowlist BEFORE pushing as root. An attacker with
+    # write access to nginx-ui's DB could otherwise pivot to writing
+    # any cert/key file as root.
+    allowed = _cert_deploy_dirs()
+    dest_fullchain = validate_under_any(
+        dest_fullchain, allowed, label="cert deploy fullchain",
+    )
+    dest_key = validate_under_any(
+        dest_key, allowed, label="cert deploy key",
+    )
 
     fullchain_bytes = backend.read_file(src_fullchain)
     key_bytes = backend.read_file(src_key)

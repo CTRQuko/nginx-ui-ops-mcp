@@ -326,6 +326,35 @@ nginx_quit()  # graceful shutdown — service is down until manual start
 - **Mutation gate** — read-only by default; the 8 mutating tools off
   until operator opts in via `NGINXUI_ALLOW_MUTATIONS=true`.
 
+## SSH hardening (operator responsibility)
+
+The plugin invokes `ssh <alias>` for every backend operation. Host
+identity verification happens at the SSH layer — there is no
+plugin-level pinning. To prevent a MITM on first connection from
+impersonating your nginx-ui host, configure each alias in
+`~/.ssh/config` (or `/etc/ssh/ssh_config.d/*.conf`) with:
+
+```ssh-config
+Host pve-claude hetzner-claude logrono-claude
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.ssh/known_hosts
+    UpdateHostKeys no
+```
+
+The plugin trusts that `StrictHostKeyChecking yes` is in effect for
+the SSH aliases it talks to. If the host key changes, SSH (and the
+plugin via it) refuses to connect — by design.
+
+See `docs/security/audit-2026-05-29-0455.md` § VULN-13 for the
+rationale.
+
+## Hardening env vars (optional)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NGINXUI_CERT_DEPLOY_DIRS` | `/etc/nginx/,/etc/ssl/,/usr/local/etc/nginx-ui/,/var/lib/nginx-ui/` | Comma-separated allowlist of directories where `cert_deploy_files` may push fullchain/key files. Validated against DB-controlled paths to prevent arbitrary file writes (see [VULN-03] in the audit). |
+| `NGINXUI_INCLUDE_BACKEND_NOTES` | unset (off) | When `true`, every `run_cmd` result includes the backend's `describe()` identity (SSH alias / LXC ID / container name) in `notes`. Useful for diagnostics; off by default to avoid leaking topology to the LLM transcript (see [VULN-11]). |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

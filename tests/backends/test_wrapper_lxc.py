@@ -373,18 +373,19 @@ def test_query_db_non_json_output_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_acme_issue_forwards_provider_env_without_logging(monkeypatch):
-    """Provider env vars (CF_API_TOKEN, CF_ZONE_ID, etc.) are exported
-    in the remote command. Test verifies they appear in the cmd
-    structure but are NOT echoed back in the result."""
+    """[VULN-06] mitigation: provider env vars (CF_API_TOKEN, etc.) are
+    written to a chmod-0700 tempfile via stdin, NOT included in any
+    cmdline that would be visible to `ps aux` / auditd. The remote
+    cmd only mentions the tempfile path; the secrets are in the
+    stdin payload of the stage step."""
     b = _backend(monkeypatch)
-    captured_cmds: list[str] = []
+    captured: list[tuple[str, bytes | None]] = []
 
     def fake_run_ssh(remote_cmd, *, stdin=None, timeout=30):
-        captured_cmds.append(remote_cmd)
-        return CommandResult(
-            return_code=0,
-            stdout="cert issued",
-        )
+        captured.append((remote_cmd, stdin))
+        # Stage call ("cat > /tmp/...") returns ok; subsequent run
+        # ("sh /tmp/...") returns success.
+        return CommandResult(return_code=0, stdout="cert issued")
 
     with patch.object(b, "_run_ssh", side_effect=fake_run_ssh):
         result = b.acme_issue(
@@ -398,14 +399,31 @@ def test_acme_issue_forwards_provider_env_without_logging(monkeypatch):
             acme_home="/home/test/.acme.sh",
         )
 
-    cmd = captured_cmds[0]
-    # Env vars are exported.
-    assert "export CF_API_TOKEN=" in cmd
-    assert "export CF_ZONE_ID=" in cmd
-    # acme.sh invocation.
-    assert "--issue" in cmd
-    assert "-d '*.example.com'" in cmd
-    assert "--dns dns_cf" in cmd
+    # 3 SSH ops: stage, run, cleanup.
+    assert len(captured) == 3
+    stage_cmd, stage_stdin = captured[0]
+    run_cmd, run_stdin = captured[1]
+    cleanup_cmd, _ = captured[2]
+
+    # Stage: cat into tempfile + chmod 700 — no token in the cmdline.
+    assert "cat > " in stage_cmd
+    assert "chmod 700" in stage_cmd
+    assert "secret-token-xyz" not in stage_cmd
+    assert "zone-123" not in stage_cmd
+    # Secrets present ONLY inside the stdin payload (script body).
+    assert stage_stdin is not None
+    assert b"export CF_API_TOKEN=" in stage_stdin
+    assert b"secret-token-xyz" in stage_stdin
+    assert b"export CF_ZONE_ID=" in stage_stdin
+    # Run: invokes the script via `sh <tmppath>` — still no token in cmdline.
+    assert run_cmd.startswith("sh ")
+    assert "secret-token-xyz" not in run_cmd
+    # Cleanup removes the tempfile.
+    assert "rm -f" in cleanup_cmd
+    # acme.sh invocation visible in script body.
+    assert b"--issue" in stage_stdin
+    assert b"-d '*.example.com'" in stage_stdin
+    assert b"--dns dns_cf" in stage_stdin
     # Result paths derive from the primary domain + ECC.
     assert "*.example.com_ecc" in result["fullchain_path"]
     assert "/fullchain.cer" in result["fullchain_path"]
@@ -425,9 +443,14 @@ def test_acme_issue_rejects_empty_domains(monkeypatch):
 
 def test_acme_issue_failure_raises_backend_error(monkeypatch):
     b = _backend(monkeypatch)
+    call_count = {"n": 0}
 
     def fake_run_ssh(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(return_code=1, stderr="rate limit hit")
+        call_count["n"] += 1
+        # 1st = stage tempfile (ok), 2nd = run script (fail rc=1), 3rd = cleanup
+        if call_count["n"] == 2:
+            return CommandResult(return_code=1, stderr="rate limit hit")
+        return CommandResult(return_code=0)
 
     with patch.object(b, "_run_ssh", side_effect=fake_run_ssh):
         with pytest.raises(BackendError, match="rate limit"):
@@ -443,12 +466,17 @@ def test_acme_issue_failure_raises_backend_error(monkeypatch):
 def test_acme_issue_rc2_treated_as_skip_not_error(monkeypatch):
     """acme.sh exits 2 when cert is current — we tolerate this."""
     b = _backend(monkeypatch)
+    call_count = {"n": 0}
 
     def fake_run_ssh(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(
-            return_code=2,
-            stdout="Skipping: cert not yet due for renewal",
-        )
+        call_count["n"] += 1
+        # 1st = stage tempfile (ok), 2nd = run script (rc=2), 3rd = cleanup
+        if call_count["n"] == 2:
+            return CommandResult(
+                return_code=2,
+                stdout="Skipping: cert not yet due for renewal",
+            )
+        return CommandResult(return_code=0)
 
     with patch.object(b, "_run_ssh", side_effect=fake_run_ssh):
         result = b.acme_issue(
@@ -466,22 +494,25 @@ def test_acme_issue_rc2_treated_as_skip_not_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_read_file_returns_bytes(monkeypatch):
+    """[VULN-04] mitigation: read_file uses _run_ssh_bytes (raw bytes),
+    not _run_ssh (UTF-8 decoded). Binary content is preserved."""
     b = _backend(monkeypatch)
 
-    def fake_run_ssh(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(return_code=0, stdout="hello world")
+    def fake_run_ssh_bytes(remote_cmd, *, stdin=None, timeout=30):
+        # Include a non-UTF-8 byte to prove no round-trip happens.
+        return (0, b"hello\xff world", b"")
 
-    with patch.object(b, "_run_ssh", side_effect=fake_run_ssh):
+    with patch.object(b, "_run_ssh_bytes", side_effect=fake_run_ssh_bytes):
         content = b.read_file("/etc/foo")
-    assert content == b"hello world"
+    assert content == b"hello\xff world"
 
 
 def test_read_file_failure_raises(monkeypatch):
     b = _backend(monkeypatch)
 
-    def fake_run_ssh(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(return_code=1, stderr="No such file")
+    def fake_run_ssh_bytes(remote_cmd, *, stdin=None, timeout=30):
+        return (1, b"", b"No such file")
 
-    with patch.object(b, "_run_ssh", side_effect=fake_run_ssh):
+    with patch.object(b, "_run_ssh_bytes", side_effect=fake_run_ssh_bytes):
         with pytest.raises(BackendError, match="No such file"):
             b.read_file("/etc/missing")

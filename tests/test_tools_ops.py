@@ -91,7 +91,10 @@ def test_write_file_happy_path_with_existing_file(fake):
     """Existing file → backup is created, new content pushed, nginx -t passes."""
     target = "/etc/nginx/sites-available/foo.conf"
     fake.reads[target] = b"old content\n"
-    fake.command_responses = [_ok(stdout="syntax is ok\n")]
+    fake.command_responses = [
+        _ok(stdout="600\n"),               # stat -c %a (mode preserve)
+        _ok(stdout="syntax is ok\n"),      # nginx -t
+    ]
     result = ops_mod.nginx_write_file(target, "new content\n")
     assert result["ok"] is True
     assert result["nginx_test_passed"] is True
@@ -130,7 +133,11 @@ def test_write_file_rolls_back_on_test_failure(fake):
     """nginx -t fails after write → backup is restored to target."""
     target = "/etc/nginx/sites-available/foo.conf"
     fake.reads[target] = b"good content\n"
-    fake.command_responses = [_ok(stderr="syntax error in line 5\n", rc=1)]
+    # Responses: stat (for [VULN-14] mode preservation), then nginx -t fail.
+    fake.command_responses = [
+        _ok(stdout="644\n"),                                # stat -c %a
+        _ok(stderr="syntax error in line 5\n", rc=1),       # nginx -t
+    ]
     result = ops_mod.nginx_write_file(target, "broken {\n")
     assert result["ok"] is False
     assert result["nginx_test_passed"] is False

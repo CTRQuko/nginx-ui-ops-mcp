@@ -200,22 +200,23 @@ def test_push_file_failure_raises(monkeypatch):
 # read_file
 
 def test_read_file_returns_bytes(monkeypatch):
+    """[VULN-04] mitigation: bytes-preserving path via _run_ssh_bytes."""
     b = _backend(monkeypatch)
 
-    def fake(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(return_code=0, stdout="contents")
+    def fake_bytes(remote_cmd, *, stdin=None, timeout=30):
+        return (0, b"contents\xff", b"")
 
-    with patch.object(b, "_run_ssh", side_effect=fake):
-        assert b.read_file("/etc/foo") == b"contents"
+    with patch.object(b, "_run_ssh_bytes", side_effect=fake_bytes):
+        assert b.read_file("/etc/foo") == b"contents\xff"
 
 
 def test_read_file_failure_raises(monkeypatch):
     b = _backend(monkeypatch)
 
-    def fake(remote_cmd, *, stdin=None, timeout=30):
-        return CommandResult(return_code=1, stderr="No such file")
+    def fake_bytes(remote_cmd, *, stdin=None, timeout=30):
+        return (1, b"", b"No such file")
 
-    with patch.object(b, "_run_ssh", side_effect=fake):
+    with patch.object(b, "_run_ssh_bytes", side_effect=fake_bytes):
         with pytest.raises(BackendError):
             b.read_file("/etc/missing")
 
@@ -266,11 +267,14 @@ def test_query_db_non_json_raises(monkeypatch):
 # acme_issue
 
 def test_acme_issue_command_shape(monkeypatch):
+    """[VULN-06] mitigation: env exports + acme.sh invocation live in
+    the script body sent via stdin to the tempfile staging step,
+    NOT in the SSH cmdline (which would leak to `ps aux`)."""
     b = _backend(monkeypatch)
-    captured: list[str] = []
+    captured: list[tuple[str, bytes | None]] = []
 
     def fake(remote_cmd, *, stdin=None, timeout=30):
-        captured.append(remote_cmd)
+        captured.append((remote_cmd, stdin))
         return CommandResult(return_code=0)
 
     with patch.object(b, "_run_ssh", side_effect=fake):
@@ -281,11 +285,28 @@ def test_acme_issue_command_shape(monkeypatch):
             provider_env={"AWS_ACCESS_KEY_ID": "ABC", "AWS_SECRET_ACCESS_KEY": "XYZ"},
             acme_home="/home/test/.acme.sh",
         )
-    cmd = captured[0]
-    assert "export AWS_ACCESS_KEY_ID=" in cmd
-    assert "--dns dns_aws" in cmd
-    assert "--keylength 2048" in cmd
-    assert "-d foo.example.com" in cmd
+
+    # 3 SSH calls: stage tempfile, run script, cleanup.
+    assert len(captured) == 3
+    stage_cmd, stage_stdin = captured[0]
+    run_cmd, _ = captured[1]
+    cleanup_cmd, _ = captured[2]
+
+    # No secrets / env exports in any cmdline.
+    for cmd in (stage_cmd, run_cmd, cleanup_cmd):
+        assert "AWS_ACCESS_KEY_ID" not in cmd
+        assert "ABC" not in cmd
+        assert "XYZ" not in cmd
+        assert "export " not in cmd
+
+    # Stage payload (stdin) contains the env exports + acme invocation.
+    assert stage_stdin is not None
+    assert b"export AWS_ACCESS_KEY_ID=" in stage_stdin
+    assert b"--dns dns_aws" in stage_stdin
+    assert b"--keylength 2048" in stage_stdin
+    assert b"-d foo.example.com" in stage_stdin
+    # Run step references the tempfile.
+    assert run_cmd.startswith("sh ")
     # RSA → no _ecc suffix in path.
     assert result["fullchain_path"].endswith("/foo.example.com/fullchain.cer")
 

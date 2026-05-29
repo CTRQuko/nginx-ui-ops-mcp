@@ -27,9 +27,21 @@ import shlex
 import subprocess
 from typing import Any
 
+from .._redact import redact_secrets
 from .base import BackendError, CommandResult, NginxUIBackend
 
 log = logging.getLogger(__name__)
+
+
+def _include_backend_notes() -> bool:
+    """[VULN-11] gate — notes leak SSH alias / LXC id to the LLM.
+
+    Default off in v0.4.0+. Operator opts in via
+    ``NGINXUI_INCLUDE_BACKEND_NOTES=true`` for diagnostics.
+    """
+    return os.environ.get(
+        "NGINXUI_INCLUDE_BACKEND_NOTES", "",
+    ).strip().lower() in ("1", "true", "yes", "on")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +242,37 @@ class WrapperLXCBackend(NginxUIBackend):
             stderr=proc.stderr.decode("utf-8", errors="replace"),
         )
 
+    def _run_ssh_bytes(
+        self,
+        remote_cmd: str,
+        *,
+        stdin: bytes | None = None,
+        timeout: int = 30,
+    ) -> tuple[int, bytes, bytes]:
+        """Like :meth:`_run_ssh` but preserves stdout/stderr as raw bytes.
+
+        [VULN-04] mitigation — used by :meth:`read_file` so binary
+        content (DER certs, blobs) is not corrupted by an intermediate
+        UTF-8 round-trip with ``errors='replace'``.
+        """
+        argv = [self.ssh_bin, self.pve_ssh_alias, remote_cmd]
+        log.debug("ssh exec (bytes): alias=%s cmd=%s",
+                  self.pve_ssh_alias, remote_cmd)
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise BackendError(
+                f"ssh to {self.pve_ssh_alias} timed out after {timeout}s"
+            ) from e
+        except FileNotFoundError as e:
+            raise BackendError(f"ssh binary not found: {self.ssh_bin}") from e
+        return proc.returncode, proc.stdout, proc.stderr
+
     def _wrap_pct_exec(self, inner: str, *, sudo: bool) -> str:
         """Build the ``[sudo] pct exec <lxc> -- claude-wrapper <inner>``
         remote command string. Uses NOPASSWD path when sudo=True."""
@@ -264,7 +307,9 @@ class WrapperLXCBackend(NginxUIBackend):
         if sudo and self.sudo_method == "password":
             stdin = (self._read_sudo_password() + "\n").encode("utf-8")
         result = self._run_ssh(remote, stdin=stdin, timeout=timeout)
-        result.notes.append(f"backend={self.describe()}")
+        # [VULN-11] gate — backend identity included only when operator opts in.
+        if _include_backend_notes():
+            result.notes.append(f"backend={self.describe()}")
         return result
 
     def push_file(
@@ -332,15 +377,20 @@ class WrapperLXCBackend(NginxUIBackend):
             )
 
     def read_file(self, remote_path: str, *, sudo: bool = False) -> bytes:
-        result = self.run_cmd(["cat", remote_path], sudo=sudo, timeout=30)
-        if not result.ok:
+        # [VULN-04] mitigation — bypass run_cmd's text-mode decoding
+        # so binary content (DER, blobs) is preserved verbatim.
+        inner_cat = f"cat {shlex.quote(remote_path)}"
+        remote = self._wrap_pct_exec(inner_cat, sudo=sudo)
+        stdin: bytes | None = None
+        if sudo and self.sudo_method == "password":
+            stdin = (self._read_sudo_password() + "\n").encode("utf-8")
+        rc, out, err = self._run_ssh_bytes(remote, stdin=stdin, timeout=30)
+        if rc != 0:
             raise BackendError(
-                f"read_file {remote_path}: rc={result.return_code} "
-                f"stderr={result.stderr[:200]}"
+                f"read_file {remote_path}: rc={rc} "
+                f"stderr={err.decode('utf-8', errors='replace')[:200]}"
             )
-        # stdout is decoded UTF-8; re-encode to bytes for the contract.
-        # If the file has non-UTF-8 bytes, replacements happen during decode.
-        return result.stdout.encode("utf-8")
+        return out
 
     def query_db(
         self,
@@ -434,34 +484,66 @@ class WrapperLXCBackend(NginxUIBackend):
 
         keylength = _key_type_to_keylength(key_type)
 
-        # Build env export prefix. NEVER log the values.
-        env_exports = " && ".join(
-            f"export {k}={shlex.quote(v)}" for k, v in provider_env.items()
-        )
-
-        # acme.sh runs on the PVE host, NOT inside the LXC (the operator's
-        # acme.sh installation is in /home/<user>/.acme.sh on PVE).
-        domain_args = " ".join(f"-d {shlex.quote(d)} " for d in domains)
+        # [VULN-06] mitigation — write the secret env exports + acme.sh
+        # invocation to a chmod-0700 tempfile and execute it. This keeps
+        # the token values OUT of /proc/<pid>/cmdline (visible to `ps`,
+        # auditd, etc.) and off the shell history of the ssh session.
+        script_lines: list[str] = ["#!/bin/sh", "set -e"]
+        for k, v in provider_env.items():
+            script_lines.append(f"export {k}={shlex.quote(v)}")
         acme_bin = shlex.quote(f"{acme_home.rstrip('/')}/acme.sh")
-        cmd = (
-            f"{env_exports} && "
-            f"{acme_bin} --issue {domain_args.strip()} "
+        domain_args = " ".join(f"-d {shlex.quote(d)}" for d in domains)
+        script_lines.append(
+            f"exec {acme_bin} --issue {domain_args} "
             f"--dns {shlex.quote(dns_provider)} "
             f"--keylength {shlex.quote(keylength)} "
             f"--server letsencrypt "
             f"--home {shlex.quote(acme_home)}"
         )
+        script = ("\n".join(script_lines) + "\n").encode("utf-8")
 
-        result = self._run_ssh(cmd, timeout=300)
+        tmp_script = f"/tmp/nginx-ui-ops-acme-{secrets.token_hex(8)}.sh"
+        # Stage the script on the PVE host with mode 0700 — only the
+        # ssh user can read it. Best-effort cleanup in finally.
+        stage = self._run_ssh(
+            f"umask 077 && cat > {shlex.quote(tmp_script)} && "
+            f"chmod 700 {shlex.quote(tmp_script)}",
+            stdin=script,
+            timeout=10,
+        )
+        if not stage.ok:
+            raise BackendError(
+                f"acme tempfile stage failed: rc={stage.return_code} "
+                f"stderr={redact_secrets(stage.stderr[:200])}"
+            )
+
+        try:
+            result = self._run_ssh(
+                f"sh {shlex.quote(tmp_script)}",
+                timeout=300,
+            )
+        finally:
+            # Best-effort cleanup; ignore failures.
+            try:
+                self._run_ssh(f"rm -f {shlex.quote(tmp_script)}", timeout=5)
+            except BackendError:
+                pass
 
         # acme.sh exits with 2 when cert is "skipped because not yet
         # due for renewal" — we treat that as success at backend level
         # but bubble the message up. The tool layer's idempotence check
         # should normally prevent this from happening.
         if result.return_code not in (0, 2):
+            # [VULN-07] mitigation — redact known secret patterns from
+            # surfaced stderr/stdout. acme.sh DNS plugins occasionally
+            # echo tokens verbatim during debug; redaction avoids
+            # leaking them via BackendError → LLM transcript.
+            err_text = redact_secrets(
+                result.stderr[:500] or result.stdout[:500]
+            )
             raise BackendError(
                 f"acme.sh --issue failed (rc={result.return_code}): "
-                f"{result.stderr[:500] or result.stdout[:500]}"
+                f"{err_text}"
             )
 
         # Compute expected paths. acme.sh stores certs at
